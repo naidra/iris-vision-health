@@ -93,7 +93,7 @@ export function useOpenCv() {
     }
 
     const script = document.createElement("script");
-    script.src = new URL("opencv.js", location.href).href;
+    script.src = new URL("opencv.js", location.href.replace('/reader', '')).href;
     script.async = true;
     script.dataset.opencvLocal = "true";
 

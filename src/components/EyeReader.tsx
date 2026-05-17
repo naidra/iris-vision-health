@@ -1,7 +1,8 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { ChangeEvent } from "react";
 import { useEffect, useRef, useState } from "react";
-import { loadOpenCV } from "@/lib/opencv-loader";
-import { IRIS_ZONES } from "@/lib/iridology-zones";
-import { Camera, Loader2, ScanEye, AlertTriangle, CircleStop } from "lucide-react";
+import { Camera, Loader2, ScanEye, AlertTriangle, CircleStop, ImagePlus } from "lucide-react";
+import { useOpenCv } from "@/hooks/useOpenCv";
 
 interface Detection {
   cx: number;
@@ -27,34 +28,40 @@ interface IrisReport {
 
 type Eye = "right" | "left";
 
+const MAX_DISPLAY_WIDTH = 960;
+
 export function EyeReader() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const rafRef = useRef<number | null>(null);
+  const detectionRef = useRef<Detection | null>(null);
+  const sourceImageDataRef = useRef<ImageData | null>(null);
 
-  const [cvReady, setCvReady] = useState(false);
-  const [cvLoading, setCvLoading] = useState(false);
+  const { ready: openCvReady, loading: openCvLoading, error: openCvError } = useOpenCv();
   const [camOn, setCamOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detection, setDetection] = useState<Detection | null>(null);
+  const [imageReady, setImageReady] = useState(false);
   const [eye, setEye] = useState<Eye>("right");
   const [report, setReport] = useState<IrisReport | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const displayedError = error ?? openCvError;
+  const autoDetectionRef = useRef<Detection | null>(null);
 
   useEffect(() => {
-    setCvLoading(true);
-    loadOpenCV()
-      .then(() => setCvReady(true))
-      .catch((e) => setError(`OpenCV failed to load: ${e.message}`))
-      .finally(() => setCvLoading(false));
     return () => stopCamera();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function startCamera() {
     setError(null);
+
     try {
+      setReport(null);
+      setDetection(null);
+      detectionRef.current = null;
+      sourceImageDataRef.current = null;
+      setImageReady(false);
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
@@ -65,213 +72,196 @@ export function EyeReader() {
         await videoRef.current.play();
       }
       setCamOn(true);
-      requestAnimationFrame(detectLoop);
     } catch (e: any) {
       setError(`Camera access denied: ${e.message}. Allow camera permission and retry.`);
     }
   }
 
   function stopCamera() {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     setCamOn(false);
-    setDetection(null);
   }
 
-  function detectLoop() {
+  async function capturePhoto() {
     const v = videoRef.current;
     const c = canvasRef.current;
-    if (!v || !c || !window.cv || v.readyState < 2) {
-      rafRef.current = requestAnimationFrame(detectLoop);
+    if (!v || !c || v.readyState < 2) {
+      setError("Camera is not ready yet.");
       return;
     }
-    const cv = window.cv;
-    c.width = v.videoWidth;
-    c.height = v.videoHeight;
+
+    const displayScale = Math.min(1, MAX_DISPLAY_WIDTH / v.videoWidth);
+    const displayWidth = Math.round(v.videoWidth * displayScale);
+    const displayHeight = Math.round(v.videoHeight * displayScale);
+    if (c.width !== displayWidth || c.height !== displayHeight) {
+      const DPR = window.devicePixelRatio || 1;
+      const internalW = Math.round(displayWidth * DPR);
+      const internalH = Math.round(displayHeight * DPR);
+      c.width = internalW;
+      c.height = internalH;
+      c.style.width = `${displayWidth}px`;
+      c.style.height = `${displayHeight}px`;
+    }
+
     const ctx = c.getContext("2d");
     if (!ctx) return;
     ctx.drawImage(v, 0, 0, c.width, c.height);
+    stopCamera();
+    await processCanvasImage();
+  }
 
-    try {
-      const src = cv.imread(c);
-      const gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.medianBlur(gray, gray, 5);
-
-      const circles = new cv.Mat();
-      cv.HoughCircles(
-        gray,
-        circles,
-        cv.HOUGH_GRADIENT,
-        1,
-        Math.max(40, gray.rows / 8),
-        100,
-        40,
-        Math.floor(gray.rows * 0.08),
-        Math.floor(gray.rows * 0.35),
-      );
-
-      let best: Detection | null = null;
-      if (circles.cols > 0) {
-        // pick largest plausible circle near center
-        let bestScore = -Infinity;
-        for (let i = 0; i < circles.cols; i++) {
-          const cx = circles.data32F[i * 3];
-          const cy = circles.data32F[i * 3 + 1];
-          const r = circles.data32F[i * 3 + 2];
-          const distFromCenter = Math.hypot(cx - c.width / 2, cy - c.height / 2);
-          const score = r - distFromCenter * 0.3;
-          if (score > bestScore) {
-            bestScore = score;
-            best = { cx, cy, rIris: r, rPupil: r * 0.35 };
-          }
-        }
-      }
-
-      // draw overlay
-      if (best) {
-        ctx.strokeStyle = "#6BCB77";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(best.cx, best.cy, best.rIris, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.strokeStyle = "#EAF7EF";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(best.cx, best.cy, best.rPupil, 0, Math.PI * 2);
-        ctx.stroke();
-        // 12 sector lines
-        ctx.strokeStyle = "rgba(234,247,239,0.5)";
-        ctx.lineWidth = 1;
-        for (let h = 0; h < 12; h++) {
-          const a = (h / 12) * Math.PI * 2 - Math.PI / 2;
-          ctx.beginPath();
-          ctx.moveTo(best.cx + Math.cos(a) * best.rPupil, best.cy + Math.sin(a) * best.rPupil);
-          ctx.lineTo(best.cx + Math.cos(a) * best.rIris, best.cy + Math.sin(a) * best.rIris);
-          ctx.stroke();
-        }
-        setDetection(best);
-      } else {
-        setDetection(null);
-      }
-
-      src.delete();
-      gray.delete();
-      circles.delete();
-    } catch (e) {
-      // swallow per-frame OpenCV errors
+  async function chooseImage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Please choose an image file.");
+      return;
     }
 
-    rafRef.current = requestAnimationFrame(detectLoop);
+    try {
+      setError(null);
+      setAnalyzing(true);
+      setReport(null);
+      setDetection(null);
+      detectionRef.current = null;
+      stopCamera();
+      const image = await fileToImage(file);
+      drawImageToCanvas(image);
+      // Yield so the drawn image and loader can render before heavy CV processing.
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await processCanvasImage();
+    } catch (e: any) {
+      setError(`Image failed to load: ${e.message}`);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  function drawImageToCanvas(image: HTMLImageElement) {
+    const c = canvasRef.current;
+    if (!c) return;
+    const scale = Math.min(1, MAX_DISPLAY_WIDTH / image.naturalWidth);
+    const displayW = Math.round(image.naturalWidth * scale);
+    const displayH = Math.round(image.naturalHeight * scale);
+    const DPR = window.devicePixelRatio || 1;
+    const internalW = Math.round(displayW * DPR);
+    const internalH = Math.round(displayH * DPR);
+
+    c.width = internalW;
+    c.height = internalH;
+    // CSS pixel size
+    c.style.width = `${displayW}px`;
+    c.style.height = `${displayH}px`;
+
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.clearRect(0, 0, internalW, internalH);
+    ctx.drawImage(image, 0, 0, internalW, internalH);
+  }
+
+  function createManualDetectionFallback(width: number, height: number): Detection {
+    const r = Math.min(width, height) * 0.2;
+    return {
+      cx: width / 2,
+      cy: height / 2,
+      rIris: r,
+      rPupil: r * 0.35,
+    };
+  }
+
+  function applyDetection(nextDetection: Detection | null) {
+    if (!nextDetection) return;
+    setDetection(nextDetection);
+    detectionRef.current = nextDetection;
+    redrawSourceWithOverlay(nextDetection);
+  }
+
+  function updateDetection(values: Partial<Detection>) {
+    if (!detection) return;
+    const rIris = values.rIris ?? detection.rIris;
+    const nextDetection: Detection = {
+      ...detection,
+      ...values,
+      rIris,
+      rPupil: rIris * 0.35,
+    };
+    applyDetection(nextDetection);
+  }
+
+  function resetDetection() {
+    const source = sourceImageDataRef.current;
+    if (!source) return;
+    const next =
+      autoDetectionRef.current ?? createManualDetectionFallback(source.width, source.height);
+    applyDetection(next);
+    if (autoDetectionRef.current) setError(null);
+  }
+
+  async function processCanvasImage() {
+    const c = canvasRef.current;
+    if (!c) return;
+    if (!openCvReady || !window.cv) {
+      setError("OpenCV is still loading. Please wait a moment and try again.");
+      return;
+    }
+
+    try {
+      setAnalyzing(true);
+      setReport(null);
+      setError(null);
+      const context = c.getContext("2d", { willReadFrequently: true });
+      if (!context) return;
+      const imageData = context.getImageData(0, 0, c.width, c.height);
+      sourceImageDataRef.current = new ImageData(
+        new Uint8ClampedArray(imageData.data),
+        imageData.width,
+        imageData.height,
+      );
+      setImageReady(true);
+
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const nextDetection = detectIrisInCv(window.cv, imageData);
+
+      if (!nextDetection) {
+        setError("No iris detected automatically. Adjust the overlay manually.");
+        autoDetectionRef.current = null;
+        const fallback = createManualDetectionFallback(imageData.width, imageData.height);
+        applyDetection(fallback);
+        return;
+      }
+
+      setError(null);
+      autoDetectionRef.current = nextDetection;
+      applyDetection(nextDetection);
+    } catch (e: any) {
+      setError(`Detection failed: ${e.message}`);
+    } finally {
+      setAnalyzing(false);
+    }
   }
 
   async function analyzeIris() {
-    if (!detection || !canvasRef.current || !window.cv) return;
+    if (!detection || !sourceImageDataRef.current) return;
+    if (!openCvReady || !window.cv) {
+      setError("OpenCV is still loading. Please wait a moment.");
+      return;
+    }
     setAnalyzing(true);
-    const cv = window.cv;
-    const c = canvasRef.current;
-    const { cx, cy, rIris, rPupil } = detection;
 
     try {
-      // crop iris region from a fresh frame (without overlay)
-      const v = videoRef.current!;
-      const tmp = document.createElement("canvas");
-      tmp.width = c.width;
-      tmp.height = c.height;
-      tmp.getContext("2d")!.drawImage(v, 0, 0);
-      const src = cv.imread(tmp);
-
-      // mean color over iris annulus
-      const mask = new cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC1);
-      cv.circle(mask, new cv.Point(cx, cy), Math.floor(rIris), new cv.Scalar(255), -1);
-      cv.circle(mask, new cv.Point(cx, cy), Math.floor(rPupil), new cv.Scalar(0), -1);
-      const mean = cv.mean(src, mask);
-      const [r, g, b] = [mean[0], mean[1], mean[2]];
-      const irisColor = classifyColor(r, g, b);
-      const dominantTone = toneDescription(r, g, b);
-
-      // Convert to gray and inspect per-sector darkness/variance for "lacunae" hints
-      const gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-      const findings: Finding[] = [];
-      const overallMean = cv.mean(gray, mask)[0];
-
-      for (const z of IRIS_ZONES) {
-        const centerAngle = ((z.hour - 1) / 12) * 360 - 90;
-        const a0 = ((centerAngle - 15) * Math.PI) / 180;
-        const a1 = ((centerAngle + 15) * Math.PI) / 180;
-        // sample points inside this wedge
-        let sum = 0;
-        let sumSq = 0;
-        let n = 0;
-        for (let radPct = 0.4; radPct < 0.95; radPct += 0.08) {
-          for (let aStep = 0; aStep <= 4; aStep++) {
-            const a = a0 + ((a1 - a0) * aStep) / 4;
-            const rr = rPupil + (rIris - rPupil) * radPct;
-            const px = Math.round(cx + Math.cos(a) * rr);
-            const py = Math.round(cy + Math.sin(a) * rr);
-            if (px < 0 || py < 0 || px >= gray.cols || py >= gray.rows) continue;
-            const val = gray.ucharPtr(py, px)[0];
-            sum += val;
-            sumSq += val * val;
-            n++;
-          }
-        }
-        if (n === 0) continue;
-        const m = sum / n;
-        const variance = sumSq / n - m * m;
-        const darkness = (overallMean - m) / Math.max(overallMean, 1);
-        let observation = "Uniform fibers — no remarkable features.";
-        let confidence = 0.2;
-        if (darkness > 0.18) {
-          observation = "Darker patch detected — classically read as a 'lacuna' / weakened tissue sign.";
-          confidence = Math.min(0.85, darkness * 2);
-        } else if (variance > 900) {
-          observation = "High fiber irregularity — Lindlahr's 'nerve ring' or stress pattern.";
-          confidence = Math.min(0.75, variance / 1800);
-        } else if (darkness < -0.15) {
-          observation = "Brighter zone — Jensen associates with acute / inflamed activity.";
-          confidence = Math.min(0.7, -darkness * 2);
-        }
-        findings.push({
-          hour: z.hour,
-          zoneRight: z.rightEye,
-          zoneLeft: z.leftEye,
-          observation,
-          confidence,
-        });
-      }
-
-      // ring observations
-      const ringObservations: string[] = [];
-      const outerMask = new cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC1);
-      cv.circle(outerMask, new cv.Point(cx, cy), Math.floor(rIris), new cv.Scalar(255), -1);
-      cv.circle(outerMask, new cv.Point(cx, cy), Math.floor(rIris * 0.85), new cv.Scalar(0), -1);
-      const outerMean = cv.mean(src, outerMask);
-      if (outerMean[0] + outerMean[1] + outerMean[2] < (r + g + b) * 0.75) {
-        ringObservations.push("Darker outer ring — historically called a 'scurf rim' (skin elimination zone).");
-      }
-      if (b > r * 1.05 && b > g * 1.05) {
-        ringObservations.push("Bluish cast — Jensen's 'lymphatic constitution'.");
-      } else if (r > b * 1.1) {
-        ringObservations.push("Warm reddish-brown cast — Jensen's 'hematogenic / mixed constitution'.");
-      }
-      outerMask.delete();
-
-      setReport({
-        irisColor,
-        dominantTone,
-        ringObservations,
-        findings: findings.sort((a, b) => b.confidence - a.confidence),
-      });
-
-      src.delete();
-      gray.delete();
-      mask.delete();
+      const source = sourceImageDataRef.current;
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const imageData = new ImageData(
+        new Uint8ClampedArray(source.data),
+        source.width,
+        source.height,
+      );
+      const report = analyzeIrisInCv(window.cv, imageData, detection);
+      setReport(report);
+      setError(null);
     } catch (e: any) {
       setError(`Analysis failed: ${e.message}`);
     } finally {
@@ -279,18 +269,72 @@ export function EyeReader() {
     }
   }
 
+  function redrawSourceWithOverlay(currentDetection: Detection | null) {
+    const c = canvasRef.current;
+    const source = sourceImageDataRef.current;
+    if (!c || !source) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    // `source.width`/`source.height` are in device pixels (canvas backing store).
+    const DPR = window.devicePixelRatio || 1;
+    c.width = source.width;
+    c.height = source.height;
+    c.style.width = `${Math.round(source.width / DPR)}px`;
+    c.style.height = `${Math.round(source.height / DPR)}px`;
+    ctx.putImageData(source, 0, 0);
+    if (currentDetection) drawOverlay(ctx, currentDetection);
+  }
+
+  function drawOverlay(ctx: CanvasRenderingContext2D, currentDetection: Detection) {
+    const cx = currentDetection.cx;
+    const cy = currentDetection.cy;
+
+    ctx.strokeStyle = "#6BCB77";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(cx, cy, currentDetection.rIris, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = "#EAF7EF";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, currentDetection.rPupil, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(234,247,239,0.5)";
+    ctx.lineWidth = 1;
+    for (let h = 0; h < 12; h++) {
+      const a = (h / 12) * Math.PI * 2 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.moveTo(
+        cx + Math.cos(a) * currentDetection.rPupil,
+        cy + Math.sin(a) * currentDetection.rPupil,
+      );
+      ctx.lineTo(
+        cx + Math.cos(a) * currentDetection.rIris,
+        cy + Math.sin(a) * currentDetection.rIris,
+      );
+      ctx.stroke();
+    }
+  }
+
   return (
     <div className="grid lg:grid-cols-[1.4fr_1fr] gap-8">
       <div className="space-y-4">
-        <div className="relative rounded-2xl overflow-hidden bg-deep shadow-soft aspect-video">
-          <video ref={videoRef} className="hidden" playsInline muted />
-          <canvas ref={canvasRef} className="w-full h-full object-cover" />
-          {!camOn && (
+        <div
+          className={`relative rounded-2xl ${camOn ? "overflow-hidden aspect-video" : "aspect-auto"} bg-deep shadow-soft w-full mx-auto`}
+        >
+          <video
+            ref={videoRef}
+            className={`w-full h-full object-cover ${camOn ? "block" : "hidden"}`}
+            playsInline
+            muted
+          />
+          <canvas ref={canvasRef} className={`${camOn ? "hidden" : "block"} object-contain`} />
+          {!camOn && !imageReady && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-primary-foreground gap-3 bg-deep/90">
-              {cvLoading ? (
+              {openCvLoading ? (
                 <>
                   <Loader2 className="h-8 w-8 animate-spin" />
-                  <p className="text-sm opacity-80">Loading OpenCV vision engine…</p>
+                  <p className="text-sm opacity-80">Loading OpenCV vision engine...</p>
                 </>
               ) : (
                 <>
@@ -305,36 +349,89 @@ export function EyeReader() {
               Iris locked · r={Math.round(detection.rIris)}px
             </div>
           )}
-          {camOn && !detection && (
+          {!camOn && imageReady && detection && (
+            <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium">
+              Iris locked · r={Math.round(detection.rIris)}px
+            </div>
+          )}
+          {camOn && (
             <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
-              Searching for iris… get closer, eye centered
+              Preview only. Capture a still image to scan.
+            </div>
+          )}
+          {!camOn && imageReady && analyzing && !detection && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-primary-foreground gap-3 bg-deep/90">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <p className="text-sm opacity-80">Analyzing the image…</p>
+            </div>
+          )}
+          {!camOn && imageReady && !detection && !analyzing && (
+            <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
+              No iris locked
             </div>
           )}
         </div>
 
         <div className="flex flex-wrap gap-3 items-center">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={chooseImage}
+          />
           {!camOn ? (
             <button
               onClick={startCamera}
-              disabled={!cvReady}
+              disabled={!openCvReady || openCvLoading}
               className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg font-medium shadow-soft hover:brightness-110 transition disabled:opacity-50"
             >
-              <Camera className="h-4 w-4" /> Start camera
+              {openCvLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Camera className="h-4 w-4" />
+              )}
+              Start camera
             </button>
           ) : (
-            <button
-              onClick={stopCamera}
-              className="inline-flex items-center gap-2 bg-secondary text-secondary-foreground px-5 py-2.5 rounded-lg font-medium hover:bg-secondary/80 transition"
-            >
-              <CircleStop className="h-4 w-4" /> Stop
-            </button>
+            <>
+              <button
+                onClick={capturePhoto}
+                disabled={!openCvReady || analyzing}
+                className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg font-medium shadow-soft hover:brightness-110 transition disabled:opacity-50"
+              >
+                {analyzing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Camera className="h-4 w-4" />
+                )}
+                Take photo
+              </button>
+              <button
+                onClick={stopCamera}
+                className="inline-flex items-center gap-2 bg-secondary text-secondary-foreground px-5 py-2.5 rounded-lg font-medium hover:bg-secondary/80 transition"
+              >
+                <CircleStop className="h-4 w-4" /> Stop
+              </button>
+            </>
           )}
           <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!openCvReady || openCvLoading || analyzing}
+            className="inline-flex items-center gap-2 bg-secondary text-secondary-foreground px-5 py-2.5 rounded-lg font-medium hover:bg-secondary/80 transition disabled:opacity-50"
+          >
+            <ImagePlus className="h-4 w-4" /> Choose an eye image
+          </button>
+          <button
             onClick={analyzeIris}
-            disabled={!detection || analyzing}
+            disabled={!openCvReady || !detection || analyzing}
             className="inline-flex items-center gap-2 bg-accent text-accent-foreground px-5 py-2.5 rounded-lg font-medium shadow-glow hover:brightness-110 transition disabled:opacity-40 disabled:shadow-none"
           >
-            {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanEye className="h-4 w-4" />}
+            {analyzing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ScanEye className="h-4 w-4" />
+            )}
             Read this iris
           </button>
           <div className="flex bg-secondary rounded-lg p-1 text-xs">
@@ -352,15 +449,77 @@ export function EyeReader() {
           </div>
         </div>
 
-        {error && (
+        {imageReady && detection && sourceImageDataRef.current && (
+          <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Fine-tune the iris overlay</div>
+                <p className="text-xs text-muted-foreground">
+                  Adjust the circle position and size to match the eye before reading.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={resetDetection}
+                className="rounded-md bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground hover:bg-secondary/80 transition"
+              >
+                Reset
+              </button>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <label className="space-y-2 text-xs text-muted-foreground">
+                <span className="block text-[11px] uppercase tracking-[0.18em]">X position</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={sourceImageDataRef.current.width}
+                  value={detection.cx}
+                  onChange={(event) => updateDetection({ cx: Number(event.target.value) })}
+                  className="w-full"
+                />
+              </label>
+              <label className="space-y-2 text-xs text-muted-foreground">
+                <span className="block text-[11px] uppercase tracking-[0.18em]">Y position</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={sourceImageDataRef.current.height}
+                  value={detection.cy}
+                  onChange={(event) => updateDetection({ cy: Number(event.target.value) })}
+                  className="w-full"
+                />
+              </label>
+              <label className="space-y-2 text-xs text-muted-foreground">
+                <span className="block text-[11px] uppercase tracking-[0.18em]">Iris size</span>
+                <input
+                  type="range"
+                  min={20}
+                  max={
+                    Math.min(sourceImageDataRef.current.width, sourceImageDataRef.current.height) /
+                    2
+                  }
+                  value={detection.rIris}
+                  onChange={(event) => updateDetection({ rIris: Number(event.target.value) })}
+                  className="w-full"
+                />
+              </label>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Use these sliders to move the region and resize the iris overlay. Press{" "}
+              <em>Read this iris</em> when the ring matches the eye.
+            </div>
+          </div>
+        )}
+
+        {displayedError && (
           <div className="flex gap-2 items-start text-sm bg-destructive/10 text-destructive border border-destructive/30 rounded-lg p-3">
-            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" /> {error}
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" /> {displayedError}
           </div>
         )}
 
         <p className="text-xs text-muted-foreground leading-relaxed">
-          Tip: bright, even lighting; hold the eye 15–25cm from the camera; look slightly to the side
-          to reduce glare. Detection uses Hough Circle Transform on each frame.
+          Tip: bright, even lighting; hold the eye 15–25cm from the camera; look slightly to the
+          side to reduce glare. OpenCV scans only captured or chosen still images.
         </p>
       </div>
 
@@ -375,7 +534,9 @@ export function EyeReader() {
         {report && (
           <div className="space-y-4">
             <div className="bg-card border border-border rounded-xl p-4 shadow-soft">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">Iris color</div>
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                Iris color
+              </div>
               <div className="font-display text-xl">{report.irisColor}</div>
               <div className="text-sm text-muted-foreground mt-1">{report.dominantTone}</div>
             </div>
@@ -401,10 +562,7 @@ export function EyeReader() {
               </div>
               <ul className="space-y-2 max-h-[420px] overflow-auto pr-1">
                 {report.findings.slice(0, 8).map((f) => (
-                  <li
-                    key={f.hour}
-                    className="bg-card border border-border rounded-lg p-3 text-sm"
-                  >
+                  <li key={f.hour} className="bg-card border border-border rounded-lg p-3 text-sm">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-semibold">
                         {f.hour}h · {eye === "right" ? f.zoneRight : f.zoneLeft}
@@ -420,9 +578,9 @@ export function EyeReader() {
             </div>
 
             <div className="text-[11px] text-muted-foreground bg-secondary/50 rounded-lg p-3 leading-relaxed">
-              These observations follow the traditional iridology framework of Bernard Jensen and Henry
-              Lindlahr. They are <strong>not a medical diagnosis</strong>. Consult a licensed clinician
-              for health concerns.
+              These observations follow the traditional iridology framework of Bernard Jensen and
+              Henry Lindlahr. They are <strong>not a medical diagnosis</strong>. Consult a licensed
+              clinician for health concerns.
             </div>
           </div>
         )}
@@ -431,7 +589,22 @@ export function EyeReader() {
   );
 }
 
-function classifyColor(r: number, g: number, b: number): string {
+const IRIS_ZONES = [
+  { hour: 12, rightEye: "Cerebrum / forebrain", leftEye: "Cerebrum / forebrain" },
+  { hour: 1, rightEye: "Forehead, sinus, face", leftEye: "Cerebellum, equilibrium" },
+  { hour: 2, rightEye: "Throat, thyroid, ear", leftEye: "Speech, throat, ear" },
+  { hour: 3, rightEye: "Bronchi, lungs (right)", leftEye: "Heart, chest (left lung)" },
+  { hour: 4, rightEye: "Liver, gallbladder", leftEye: "Spleen, diaphragm" },
+  { hour: 5, rightEye: "Stomach, pancreas (head)", leftEye: "Stomach, pancreas (tail)" },
+  { hour: 6, rightEye: "Kidney, adrenal, bladder", leftEye: "Kidney, adrenal, bladder" },
+  { hour: 7, rightEye: "Sciatic, lower colon", leftEye: "Sciatic, lower colon" },
+  { hour: 8, rightEye: "Reproductive (right)", leftEye: "Reproductive (left)" },
+  { hour: 9, rightEye: "Liver lobe, ribs", leftEye: "Heart base, ribs" },
+  { hour: 10, rightEye: "Shoulder, arm", leftEye: "Shoulder, arm" },
+  { hour: 11, rightEye: "Cerebellum, balance", leftEye: "Forehead, sinus, face" },
+];
+
+function classifyColor(r: number, g: number, b: number) {
   if (b > r && b > g && b - r > 15) return "Blue / lymphatic";
   if (r > b && r - b > 25 && g > b) return "Brown / hematogenic";
   if (Math.abs(r - g) < 15 && Math.abs(g - b) < 15) return "Grey / mixed";
@@ -439,9 +612,187 @@ function classifyColor(r: number, g: number, b: number): string {
   return "Mixed / intermediate";
 }
 
-function toneDescription(r: number, g: number, b: number): string {
+function toneDescription(r: number, g: number, b: number) {
   const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-  if (lum < 70) return "Deep, low-light reading — try brighter ambient lighting.";
-  if (lum > 200) return "Very bright — possible glare washing out fiber detail.";
+  if (lum < 70) return "Deep, low-light reading - try brighter ambient lighting.";
+  if (lum > 200) return "Very bright - possible glare washing out fiber detail.";
   return `Tone balance R${Math.round(r)} G${Math.round(g)} B${Math.round(b)}.`;
+}
+
+function matFromImageData(cv: any, imageData: ImageData) {
+  if (typeof cv.matFromImageData === "function") return cv.matFromImageData(imageData);
+  return cv.matFromArray(imageData.height, imageData.width, cv.CV_8UC4, imageData.data);
+}
+
+function detectIrisInCv(cv: any, imageData: ImageData): Detection | null {
+  let src: any;
+  let gray: any;
+  let circles: any;
+
+  try {
+    src = matFromImageData(cv, imageData);
+    gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.medianBlur(gray, gray, 5);
+
+    circles = new cv.Mat();
+    cv.HoughCircles(
+      gray,
+      circles,
+      cv.HOUGH_GRADIENT,
+      1,
+      Math.max(32, gray.rows / 8),
+      100,
+      40,
+      Math.floor(gray.rows * 0.08),
+      Math.floor(gray.rows * 0.35),
+    );
+
+    let best: Detection | null = null;
+    if (circles.cols > 0) {
+      let bestScore = -Infinity;
+      for (let i = 0; i < circles.cols; i++) {
+        const cx = circles.data32F[i * 3];
+        const cy = circles.data32F[i * 3 + 1];
+        const r = circles.data32F[i * 3 + 2];
+        const distFromCenter = Math.hypot(cx - imageData.width / 2, cy - imageData.height / 2);
+        const score = r - distFromCenter * 0.3;
+
+        if (score > bestScore) {
+          bestScore = score;
+          best = { cx, cy, rIris: r, rPupil: r * 0.35 };
+        }
+      }
+    }
+
+    return best;
+  } finally {
+    src?.delete();
+    gray?.delete();
+    circles?.delete();
+  }
+}
+
+function analyzeIrisInCv(cv: any, imageData: ImageData, detection: Detection): IrisReport {
+  const { cx, cy, rIris, rPupil } = detection;
+  let src: any;
+  let gray: any;
+  let mask: any;
+  let outerMask: any;
+
+  try {
+    src = matFromImageData(cv, imageData);
+    mask = new cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC1);
+    cv.circle(mask, new cv.Point(cx, cy), Math.floor(rIris), new cv.Scalar(255), -1);
+    cv.circle(mask, new cv.Point(cx, cy), Math.floor(rPupil), new cv.Scalar(0), -1);
+
+    const mean = cv.mean(src, mask);
+    const [r, g, b] = [mean[0], mean[1], mean[2]];
+    const irisColor = classifyColor(r, g, b);
+    const dominantTone = toneDescription(r, g, b);
+
+    gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    const findings: Finding[] = [];
+    const overallMean = cv.mean(gray, mask)[0];
+
+    for (const zone of IRIS_ZONES) {
+      const centerAngle = ((zone.hour - 1) / 12) * 360 - 90;
+      const a0 = ((centerAngle - 15) * Math.PI) / 180;
+      const a1 = ((centerAngle + 15) * Math.PI) / 180;
+      let sum = 0;
+      let sumSq = 0;
+      let n = 0;
+
+      for (let radPct = 0.4; radPct < 0.95; radPct += 0.08) {
+        for (let aStep = 0; aStep <= 4; aStep++) {
+          const angle = a0 + ((a1 - a0) * aStep) / 4;
+          const rr = rPupil + (rIris - rPupil) * radPct;
+          const px = Math.round(cx + Math.cos(angle) * rr);
+          const py = Math.round(cy + Math.sin(angle) * rr);
+          if (px < 0 || py < 0 || px >= gray.cols || py >= gray.rows) continue;
+          const val = gray.ucharPtr(py, px)[0];
+          sum += val;
+          sumSq += val * val;
+          n++;
+        }
+      }
+
+      if (n === 0) continue;
+      const m = sum / n;
+      const variance = sumSq / n - m * m;
+      const darkness = (overallMean - m) / Math.max(overallMean, 1);
+      let observation = "Uniform fibers - no remarkable features.";
+      let confidence = 0.2;
+
+      if (darkness > 0.18) {
+        observation =
+          "Darker patch detected - classically read as a 'lacuna' / weakened tissue sign.";
+        confidence = Math.min(0.85, darkness * 2);
+      } else if (variance > 900) {
+        observation = "High fiber irregularity - Lindlahr's 'nerve ring' or stress pattern.";
+        confidence = Math.min(0.75, variance / 1800);
+      } else if (darkness < -0.15) {
+        observation = "Brighter zone - Jensen associates with acute / inflamed activity.";
+        confidence = Math.min(0.7, -darkness * 2);
+      }
+
+      findings.push({
+        hour: zone.hour,
+        zoneRight: zone.rightEye,
+        zoneLeft: zone.leftEye,
+        observation,
+        confidence,
+      });
+    }
+
+    const ringObservations: string[] = [];
+    outerMask = new cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC1);
+    cv.circle(outerMask, new cv.Point(cx, cy), Math.floor(rIris), new cv.Scalar(255), -1);
+    cv.circle(outerMask, new cv.Point(cx, cy), Math.floor(rIris * 0.85), new cv.Scalar(0), -1);
+    const outerMean = cv.mean(src, outerMask);
+
+    if (outerMean[0] + outerMean[1] + outerMean[2] < (r + g + b) * 0.75) {
+      ringObservations.push(
+        "Darker outer ring - historically called a 'scurf rim' (skin elimination zone).",
+      );
+    }
+    if (b > r * 1.05 && b > g * 1.05) {
+      ringObservations.push("Bluish cast - Jensen's 'lymphatic constitution'.");
+    } else if (r > b * 1.1) {
+      ringObservations.push(
+        "Warm reddish-brown cast - Jensen's 'hematogenic / mixed constitution'.",
+      );
+    }
+
+    return {
+      irisColor,
+      dominantTone,
+      ringObservations,
+      findings: findings.sort((a, b) => b.confidence - a.confidence),
+    };
+  } finally {
+    src?.delete();
+    gray?.delete();
+    mask?.delete();
+    outerMask?.delete();
+  }
+}
+
+function fileToImage(file: Blob) {
+  const objectUrl = URL.createObjectURL(file);
+
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("The selected image could not be loaded."));
+    };
+    image.src = objectUrl;
+  });
 }

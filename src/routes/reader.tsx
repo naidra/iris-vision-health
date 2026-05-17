@@ -6,9 +6,17 @@ export const Route = createFileRoute("/reader")({
   head: () => ({
     meta: [
       { title: "Eye Reader — IrisScope" },
-      { name: "description", content: "Use your webcam and OpenCV.js to detect your iris and explore traditional iridology zone readings — all in your browser." },
+      {
+        name: "description",
+        content:
+          "Use your webcam and local OpenCV.js to detect your iris and explore traditional iridology zone readings — all in your browser.",
+      },
       { property: "og:title", content: "Eye Reader — IrisScope" },
-      { property: "og:description", content: "Browser-only iris detection with OpenCV.js and the classical iridology zone map." },
+      {
+        property: "og:description",
+        content:
+          "Browser-only iris detection with local OpenCV.js and the classical iridology zone map.",
+      },
     ],
   }),
 });
@@ -20,7 +28,7 @@ function ReaderPage() {
         <h1 className="font-display text-4xl md:text-5xl">Eye reader</h1>
         <p className="text-muted-foreground mt-2 max-w-2xl">
           Allow camera access, hold one eye close and well-lit, then capture a reading. Everything
-          runs locally with OpenCV.js — no frames leave your device.
+          runs locally with the project's OpenCV.js files — no frames leave your device.
         </p>
       </header>
       <EyeReader />

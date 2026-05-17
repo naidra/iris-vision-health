@@ -7,7 +7,11 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "IrisScope — Read the iris in your browser" },
-      { name: "description", content: "Detect your iris with OpenCV in the browser, explore the traditional iridology zone map, and study the classic readings from Jensen & Lindlahr." },
+      {
+        name: "description",
+        content:
+          "Detect your iris with local OpenCV.js in the browser, explore the traditional iridology zone map, and study the classic readings from Jensen & Lindlahr.",
+      },
     ],
   }),
 });
@@ -24,9 +28,9 @@ function Home() {
             See what classical <span className="text-primary">iridology</span> reads in your iris.
           </h1>
           <p className="mt-5 text-lg text-muted-foreground max-w-xl leading-relaxed">
-            IrisScope locks onto your iris with OpenCV, overlays the 12-sector chart from Bernard
-            Jensen's <em>Iridology Simplified</em>, and surfaces observations grounded in Henry
-            Lindlahr's <em>Iridiagnosis</em>. Built for study — not diagnosis.
+            IrisScope locks onto your iris with local OpenCV.js, overlays the 12-sector chart from
+            Bernard Jensen's <em>Iridology Simplified</em>, and surfaces observations grounded in
+            Henry Lindlahr's <em>Iridiagnosis</em>. Built for study — not diagnosis.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
@@ -67,8 +71,8 @@ function Home() {
         {[
           {
             icon: ScanEye,
-            title: "Hough Circle iris lock",
-            body: "OpenCV.js runs the Hough Transform on every webcam frame to find the iris and pupil, then overlays the 12 traditional sectors live.",
+            title: "OpenCV iris lock",
+            body: "A local OpenCV.js worker runs Hough Circle detection on webcam frames, then overlays the 12 traditional sectors live.",
           },
           {
             icon: BookOpen,

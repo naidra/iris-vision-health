@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { IRIS_ZONES } from "@/lib/iridology-zones";
 
 interface Props {
@@ -9,11 +9,13 @@ interface Props {
 
 // Renders an SVG iridology chart with 12 clock sectors and 3 concentric rings.
 export function IridologyChart({ eye, highlightHour, size = 320 }: Props) {
+  const gradientId = `iris-grad-${useId().replace(/:/g, "")}`;
   const [hover, setHover] = useState<number | null>(null);
   const cx = size / 2;
   const cy = size / 2;
   const rOuter = size * 0.46;
   const rInner = size * 0.16;
+  const fmt = (value: number) => Number(value.toFixed(3));
 
   const sectors = useMemo(() => {
     return IRIS_ZONES.map((z) => {
@@ -34,7 +36,7 @@ export function IridologyChart({ eye, highlightHour, size = 320 }: Props) {
     const y3 = cy + rI * Math.sin(s(end));
     const x4 = cx + rI * Math.cos(s(start));
     const y4 = cy + rI * Math.sin(s(start));
-    return `M ${x1} ${y1} A ${rO} ${rO} 0 0 1 ${x2} ${y2} L ${x3} ${y3} A ${rI} ${rI} 0 0 0 ${x4} ${y4} Z`;
+    return `M ${fmt(x1)} ${fmt(y1)} A ${fmt(rO)} ${fmt(rO)} 0 0 1 ${fmt(x2)} ${fmt(y2)} L ${fmt(x3)} ${fmt(y3)} A ${fmt(rI)} ${fmt(rI)} 0 0 0 ${fmt(x4)} ${fmt(y4)} Z`;
   };
 
   const active = hover ?? highlightHour ?? null;
@@ -44,13 +46,13 @@ export function IridologyChart({ eye, highlightHour, size = 320 }: Props) {
     <div className="flex flex-col items-center gap-4">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="select-none">
         <defs>
-          <radialGradient id="iris-grad" cx="50%" cy="50%" r="50%">
+          <radialGradient id={gradientId} cx="50%" cy="50%" r="50%">
             <stop offset="30%" stopColor="oklch(0.32 0.07 155)" />
             <stop offset="70%" stopColor="oklch(0.52 0.11 155)" />
             <stop offset="100%" stopColor="oklch(0.78 0.18 145)" />
           </radialGradient>
         </defs>
-        <circle cx={cx} cy={cy} r={rOuter} fill="url(#iris-grad)" opacity={0.18} />
+        <circle cx={cx} cy={cy} r={rOuter} fill={`url(#${gradientId})`} opacity={0.18} />
         {sectors.map((s) => {
           const isActive = active === s.hour;
           return (
@@ -70,8 +72,8 @@ export function IridologyChart({ eye, highlightHour, size = 320 }: Props) {
                 const ty = cy + (rOuter + 14) * Math.sin((mid * Math.PI) / 180);
                 return (
                   <text
-                    x={tx}
-                    y={ty}
+                    x={fmt(tx)}
+                    y={fmt(ty)}
                     textAnchor="middle"
                     dominantBaseline="middle"
                     fontSize={11}

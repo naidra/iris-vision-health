@@ -6,9 +6,16 @@ export const Route = createFileRoute("/about")({
   head: () => ({
     meta: [
       { title: "About & disclaimer — IrisScope" },
-      { name: "description", content: "About IrisScope: the iridology references it uses, how the in-browser OpenCV pipeline works, and the medical disclaimer." },
+      {
+        name: "description",
+        content:
+          "About IrisScope: the iridology references it uses, how the in-browser vision pipeline works, and the medical disclaimer.",
+      },
       { property: "og:title", content: "About & disclaimer — IrisScope" },
-      { property: "og:description", content: "How IrisScope works and why it is an educational tool, not a medical diagnosis." },
+      {
+        property: "og:description",
+        content: "How IrisScope works and why it is an educational tool, not a medical diagnosis.",
+      },
     ],
   }),
 });
@@ -32,14 +39,17 @@ function AboutPage() {
       <section className="mt-10 space-y-4">
         <h2 className="font-display text-2xl">How it works</h2>
         <p className="text-foreground/90">
-          The app loads <a href="https://docs.opencv.org/" className="text-primary underline">OpenCV.js</a>{" "}
-          into the browser. Your webcam stream is captured with the standard WebRTC API and processed
-          on each frame:
+          The app loads a vendored OpenCV.js build from this project and runs it locally in the
+          browser. Your webcam stream is captured with the standard WebRTC API and processed on
+          downsampled frames:
         </p>
         <ol className="list-decimal pl-5 space-y-1.5 text-foreground/90">
-          <li>Grayscale conversion and median blur to reduce camera noise.</li>
-          <li>Hough Circle Transform locates the iris (largest plausible circle near the center) and estimates the pupil.</li>
-          <li>The annular iris region is sampled in 12 wedges; mean intensity and variance per wedge feed simple heuristics for "darker patch", "high irregularity", and "brighter zone".</li>
+          <li>OpenCV grayscale conversion and median blur reduce camera noise.</li>
+          <li>OpenCV's Hough Circle Transform locates the iris and estimates the pupil.</li>
+          <li>
+            The annular iris region is sampled in 12 wedges; mean intensity and variance per wedge
+            feed simple heuristics for "darker patch", "high irregularity", and "brighter zone".
+          </li>
           <li>Average RGB across the iris classifies the constitutional color family.</li>
         </ol>
         <p className="text-foreground/90">

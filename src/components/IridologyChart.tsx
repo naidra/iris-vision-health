@@ -5,16 +5,26 @@ interface Props {
   eye: "left" | "right";
   highlightHour?: number | null;
   size?: number;
+  showPointerSideIndicator?: boolean;
 }
 
+type PointerSide = "left" | "right";
+
 // Renders an SVG iridology chart with 12 clock sectors and 3 concentric rings.
-export function IridologyChart({ eye, highlightHour, size = 320 }: Props) {
+export function IridologyChart({
+  eye,
+  highlightHour,
+  size = 320,
+  showPointerSideIndicator = false,
+}: Props) {
   const gradientId = `iris-grad-${useId().replace(/:/g, "")}`;
   const [hover, setHover] = useState<number | null>(null);
+  const [pointerSide, setPointerSide] = useState<PointerSide | null>(null);
   const cx = size / 2;
   const cy = size / 2;
   const rOuter = size * 0.46;
   const rInner = size * 0.16;
+  const labelPadding = size * 0.08;
   const fmt = (value: number) => Number(value.toFixed(3));
 
   const sectors = useMemo(() => {
@@ -41,10 +51,25 @@ export function IridologyChart({ eye, highlightHour, size = 320 }: Props) {
 
   const active = hover ?? highlightHour ?? null;
   const activeZone = sectors.find((s) => s.hour === active);
+  const pointerSideLabel = pointerSide
+    ? eyeOrientationLabel(eye, pointerSide)
+    : "Move over the eye";
+  const leftSideLabel = eyeOrientationLabel(eye, "left");
+  const rightSideLabel = eyeOrientationLabel(eye, "right");
 
   return (
     <div className="flex flex-col items-center gap-4">
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="select-none">
+      <svg
+        width={size}
+        height={size}
+        viewBox={`${-labelPadding} ${-labelPadding} ${size + labelPadding * 2} ${size + labelPadding * 2}`}
+        className="select-none"
+        onPointerMove={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          setPointerSide(event.clientX - rect.left < rect.width / 2 ? "left" : "right");
+        }}
+        onPointerLeave={() => setPointerSide(null)}
+      >
         <defs>
           <radialGradient id={gradientId} cx="50%" cy="50%" r="50%">
             <stop offset="30%" stopColor="oklch(0.32 0.07 155)" />
@@ -102,6 +127,19 @@ export function IridologyChart({ eye, highlightHour, size = 320 }: Props) {
         {/* pupil */}
         <circle cx={cx} cy={cy} r={rInner} fill="oklch(0.18 0.03 155)" />
       </svg>
+      {showPointerSideIndicator && (
+        <div className="flex w-full max-w-[420px] flex-col gap-2">
+          <div className="hidden grid grid-cols-2 gap-3 text-[11px] font-medium text-muted-foreground">
+            <div className="rounded-full bg-secondary/70 px-3 py-1">← {leftSideLabel}</div>
+            <div className="rounded-full bg-secondary/70 px-3 py-1 text-right">
+              {rightSideLabel} →
+            </div>
+          </div>
+          <div className="self-center rounded-full bg-secondary px-3 py-1 text-xs font-medium text-secondary-foreground">
+            Mouse: {pointerSideLabel}
+          </div>
+        </div>
+      )}
       <div className="text-xs text-center min-h-[3em] max-w-[280px]">
         {activeZone ? (
           <>
@@ -118,4 +156,9 @@ export function IridologyChart({ eye, highlightHour, size = 320 }: Props) {
       </div>
     </div>
   );
+}
+
+function eyeOrientationLabel(eye: Props["eye"], side: PointerSide) {
+  const noseSide: PointerSide = eye === "right" ? "right" : "left";
+  return side === noseSide ? "Nose / other eye side" : "Temple side";
 }

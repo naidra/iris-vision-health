@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { IridologyChart } from "@/components/IridologyChart";
 import { ScanEye, BookOpen, ShieldCheck, Sparkles } from "lucide-react";
+import { useState } from "react";
 
 export const Route = createFileRoute("/")({
   component: Home,
@@ -17,9 +18,11 @@ export const Route = createFileRoute("/")({
 });
 
 function Home() {
+  const [chartEye, setChartEye] = useState<"right" | "left">("right");
+
   return (
     <main className="mx-auto max-w-6xl px-6 pt-16 pb-24">
-      <section className="grid lg:grid-cols-[1.2fr_1fr] gap-12 items-center">
+      <section className="grid lg:grid-cols-[1.2fr_1fr] gap-12 items-start">
         <div>
           <div className="inline-flex items-center gap-2 bg-secondary/70 text-secondary-foreground rounded-full px-3 py-1 text-xs font-medium">
             <Sparkles className="h-3 w-3" /> 100% in-browser · no upload, no server
@@ -62,7 +65,23 @@ function Home() {
         <div className="relative">
           <div className="absolute inset-0 -z-10 blur-3xl rounded-full bg-vital/30" />
           <div className="bg-card border border-border rounded-3xl p-8 shadow-soft">
-            <IridologyChart eye="right" size={360} />
+            <div className="mb-4 flex justify-center">
+              <div className="flex bg-secondary rounded-lg p-1 text-xs">
+                {(["right", "left"] as const).map((eye) => (
+                  <button
+                    key={eye}
+                    type="button"
+                    onClick={() => setChartEye(eye)}
+                    className={`px-3 py-1.5 rounded-md transition ${
+                      chartEye === eye ? "bg-background shadow-sm" : "text-muted-foreground"
+                    }`}
+                  >
+                    {eye[0].toUpperCase() + eye.slice(1)} eye
+                  </button>
+                ))}
+              </div>
+            </div>
+            <IridologyChart eye={chartEye} size={420} showPointerSideIndicator />
           </div>
         </div>
       </section>

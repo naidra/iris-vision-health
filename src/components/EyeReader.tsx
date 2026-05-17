@@ -1,7 +1,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
-import { Camera, Loader2, ScanEye, AlertTriangle, CircleStop, ImagePlus } from "lucide-react";
+import {
+  Camera,
+  Loader2,
+  ScanEye,
+  AlertTriangle,
+  CircleStop,
+  ImagePlus,
+  HelpCircle,
+} from "lucide-react";
 import { useOpenCv } from "@/hooks/useOpenCv";
 
 interface Detection {
@@ -9,6 +17,11 @@ interface Detection {
   cy: number;
   rIris: number;
   rPupil: number;
+}
+
+interface EyelidMask {
+  topOffset: number;
+  bottomOffset: number;
 }
 
 interface Finding {
@@ -27,8 +40,17 @@ interface IrisReport {
 }
 
 type Eye = "right" | "left";
+type PointerSide = "left" | "right";
+type DragMode = "move" | "resize" | "upperLid" | "lowerLid";
+type CanvasPoint = { x: number; y: number };
 
 const MAX_DISPLAY_WIDTH = 960;
+const IRIS_HANDLE_SIZE = 22;
+const EYELID_HANDLE_SIZE = 24;
+const HANDLE_HIT_MULTIPLIER = 3.4;
+const EYELID_HANDLE_HIT_SIZE = 56;
+const EYELID_LINE_HIT_SIZE = 34;
+const DEFAULT_EYELID_MASK: EyelidMask = { topOffset: -0.72, bottomOffset: 0.78 };
 
 export function EyeReader() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -36,7 +58,14 @@ export function EyeReader() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectionRef = useRef<Detection | null>(null);
+  const eyelidMaskRef = useRef<EyelidMask>(DEFAULT_EYELID_MASK);
   const sourceImageDataRef = useRef<ImageData | null>(null);
+  const dragRef = useRef<{
+    mode: DragMode;
+    pointerId: number;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
 
   const { ready: openCvReady, loading: openCvLoading, error: openCvError } = useOpenCv();
   const [camOn, setCamOn] = useState(false);
@@ -46,6 +75,8 @@ export function EyeReader() {
   const [eye, setEye] = useState<Eye>("right");
   const [report, setReport] = useState<IrisReport | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [eyelidMask, setEyelidMask] = useState<EyelidMask>(DEFAULT_EYELID_MASK);
+  const [pointerSide, setPointerSide] = useState<PointerSide | null>(null);
   const displayedError = error ?? openCvError;
   const autoDetectionRef = useRef<Detection | null>(null);
 
@@ -53,12 +84,19 @@ export function EyeReader() {
     return () => stopCamera();
   }, []);
 
+  function updateEyelidMask(nextMask: EyelidMask) {
+    eyelidMaskRef.current = nextMask;
+    setEyelidMask(nextMask);
+  }
+
   async function startCamera() {
     setError(null);
 
     try {
       setReport(null);
       setDetection(null);
+      updateEyelidMask(DEFAULT_EYELID_MASK);
+      setPointerSide(null);
       detectionRef.current = null;
       sourceImageDataRef.current = null;
       setImageReady(false);
@@ -126,6 +164,8 @@ export function EyeReader() {
       setAnalyzing(true);
       setReport(null);
       setDetection(null);
+      updateEyelidMask(DEFAULT_EYELID_MASK);
+      setPointerSide(null);
       detectionRef.current = null;
       stopCamera();
       const image = await fileToImage(file);
@@ -179,16 +219,9 @@ export function EyeReader() {
     redrawSourceWithOverlay(nextDetection);
   }
 
-  function updateDetection(values: Partial<Detection>) {
-    if (!detection) return;
-    const rIris = values.rIris ?? detection.rIris;
-    const nextDetection: Detection = {
-      ...detection,
-      ...values,
-      rIris,
-      rPupil: rIris * 0.35,
-    };
+  function updateDetectionByDrag(nextDetection: Detection) {
     applyDetection(nextDetection);
+    if (autoDetectionRef.current) setError(null);
   }
 
   function resetDetection() {
@@ -196,7 +229,11 @@ export function EyeReader() {
     if (!source) return;
     const next =
       autoDetectionRef.current ?? createManualDetectionFallback(source.width, source.height);
-    applyDetection(next);
+    updateEyelidMask(DEFAULT_EYELID_MASK);
+    setPointerSide(null);
+    setDetection(next);
+    detectionRef.current = next;
+    redrawSourceWithOverlay(next, DEFAULT_EYELID_MASK);
     if (autoDetectionRef.current) setError(null);
   }
 
@@ -259,7 +296,7 @@ export function EyeReader() {
         source.width,
         source.height,
       );
-      const report = analyzeIrisInCv(window.cv, imageData, detection);
+      const report = analyzeIrisInCv(window.cv, imageData, detection, eyelidMask);
       setReport(report);
       setError(null);
     } catch (e: any) {
@@ -269,7 +306,10 @@ export function EyeReader() {
     }
   }
 
-  function redrawSourceWithOverlay(currentDetection: Detection | null) {
+  function redrawSourceWithOverlay(
+    currentDetection: Detection | null,
+    currentEyelidMask = eyelidMask,
+  ) {
     const c = canvasRef.current;
     const source = sourceImageDataRef.current;
     if (!c || !source) return;
@@ -282,25 +322,29 @@ export function EyeReader() {
     c.style.width = `${Math.round(source.width / DPR)}px`;
     c.style.height = `${Math.round(source.height / DPR)}px`;
     ctx.putImageData(source, 0, 0);
-    if (currentDetection) drawOverlay(ctx, currentDetection);
+    if (currentDetection) drawOverlay(ctx, currentDetection, currentEyelidMask);
   }
 
-  function drawOverlay(ctx: CanvasRenderingContext2D, currentDetection: Detection) {
+  function drawOverlay(
+    ctx: CanvasRenderingContext2D,
+    currentDetection: Detection,
+    currentEyelidMask: EyelidMask,
+  ) {
     const cx = currentDetection.cx;
     const cy = currentDetection.cy;
 
     ctx.strokeStyle = "#6BCB77";
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 6;
     ctx.beginPath();
     ctx.arc(cx, cy, currentDetection.rIris, 0, Math.PI * 2);
     ctx.stroke();
     ctx.strokeStyle = "#EAF7EF";
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 4;
     ctx.beginPath();
     ctx.arc(cx, cy, currentDetection.rPupil, 0, Math.PI * 2);
     ctx.stroke();
     ctx.strokeStyle = "rgba(234,247,239,0.5)";
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 2;
     for (let h = 0; h < 12; h++) {
       const a = (h / 12) * Math.PI * 2 - Math.PI / 2;
       ctx.beginPath();
@@ -314,13 +358,176 @@ export function EyeReader() {
       );
       ctx.stroke();
     }
+
+    ctx.fillStyle = "#6BCB77";
+    ctx.strokeStyle = "#EAF7EF";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(cx + currentDetection.rIris, cy, IRIS_HANDLE_SIZE, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    drawEyelidMask(ctx, currentDetection, currentEyelidMask);
   }
 
+  function getCanvasPoint(event: PointerEvent<HTMLCanvasElement>) {
+    const c = canvasRef.current;
+    if (!c) return null;
+    const rect = c.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * c.width,
+      y: ((event.clientY - rect.top) / rect.height) * c.height,
+    };
+  }
+
+  function updatePointerSide(event: PointerEvent<HTMLCanvasElement>) {
+    const point = getCanvasPoint(event);
+    const currentDetection = detectionRef.current;
+    if (!point || !currentDetection || camOn) {
+      setPointerSide(null);
+      return;
+    }
+
+    setPointerSide(point.x < currentDetection.cx ? "left" : "right");
+  }
+
+  function handleCanvasPointerDown(event: PointerEvent<HTMLCanvasElement>) {
+    if (!imageReady || !detection || camOn) return;
+    updatePointerSide(event);
+    const point = getCanvasPoint(event);
+    if (!point) return;
+
+    const handleX = detection.cx + detection.rIris;
+    const handleY = detection.cy;
+    const upperHandleY = eyelidCurveY(detection, eyelidMask, "upper", detection.cx);
+    const lowerHandleY = eyelidCurveY(detection, eyelidMask, "lower", detection.cx);
+    const handleDistance = Math.hypot(point.x - handleX, point.y - handleY);
+    const upperHandleDistance = Math.hypot(point.x - detection.cx, point.y - upperHandleY);
+    const lowerHandleDistance = Math.hypot(point.x - detection.cx, point.y - lowerHandleY);
+    const centerDistance = Math.hypot(point.x - detection.cx, point.y - detection.cy);
+    const nearRing =
+      Math.abs(centerDistance - detection.rIris) <= Math.max(18, detection.rIris * 0.08);
+    const eyelidLineHit = eyelidDragModeFromPoint(detection, eyelidMask, point);
+    let mode: DragMode = "move";
+
+    const upperHandleHit =
+      upperHandleDistance <=
+      Math.max(EYELID_HANDLE_HIT_SIZE, EYELID_HANDLE_SIZE * HANDLE_HIT_MULTIPLIER);
+    const lowerHandleHit =
+      lowerHandleDistance <=
+      Math.max(EYELID_HANDLE_HIT_SIZE, EYELID_HANDLE_SIZE * HANDLE_HIT_MULTIPLIER);
+
+    if (upperHandleHit) {
+      mode = "upperLid";
+    } else if (lowerHandleHit) {
+      mode = "lowerLid";
+    } else if (eyelidLineHit) {
+      mode = eyelidLineHit;
+    } else if (handleDistance <= IRIS_HANDLE_SIZE * HANDLE_HIT_MULTIPLIER || nearRing) {
+      mode = "resize";
+    }
+
+    if (mode === "move" && centerDistance > detection.rIris) return;
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      mode,
+      pointerId: event.pointerId,
+      offsetX: point.x - detection.cx,
+      offsetY:
+        mode === "upperLid" || mode === "lowerLid"
+          ? point.y -
+            eyelidCurveY(detection, eyelidMask, mode === "upperLid" ? "upper" : "lower", point.x)
+          : point.y - detection.cy,
+    };
+  }
+
+  function handleCanvasPointerMove(event: PointerEvent<HTMLCanvasElement>) {
+    updatePointerSide(event);
+    const drag = dragRef.current;
+    const currentDetection = detectionRef.current;
+    const source = sourceImageDataRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !currentDetection || !source) return;
+
+    const point = getCanvasPoint(event);
+    if (!point) return;
+
+    event.preventDefault();
+    if (drag.mode === "upperLid" || drag.mode === "lowerLid") {
+      const lid = drag.mode === "upperLid" ? "upper" : "lower";
+      const currentEyelidMask = eyelidMaskRef.current;
+      const offset = eyelidOffsetFromPoint(currentDetection, lid, {
+        x: point.x,
+        y: point.y - drag.offsetY,
+      });
+      const next =
+        drag.mode === "upperLid"
+          ? {
+              ...currentEyelidMask,
+              topOffset: clamp(offset, -1.05, currentEyelidMask.bottomOffset - 0.18),
+            }
+          : {
+              ...currentEyelidMask,
+              bottomOffset: clamp(offset, currentEyelidMask.topOffset + 0.18, 1.05),
+            };
+      updateEyelidMask(next);
+      redrawSourceWithOverlay(currentDetection, next);
+      if (autoDetectionRef.current) setError(null);
+      return;
+    }
+
+    if (drag.mode === "resize") {
+      const maxRadius = Math.min(
+        currentDetection.cx,
+        currentDetection.cy,
+        source.width - currentDetection.cx,
+        source.height - currentDetection.cy,
+      );
+      const rIris = clamp(
+        Math.hypot(point.x - currentDetection.cx, point.y - currentDetection.cy),
+        20,
+        Math.max(20, maxRadius),
+      );
+      updateDetectionByDrag({
+        ...currentDetection,
+        rIris,
+        rPupil: rIris * 0.35,
+      });
+      return;
+    }
+
+    const rIris = currentDetection.rIris;
+    const cx = clamp(point.x - drag.offsetX, rIris, source.width - rIris);
+    const cy = clamp(point.y - drag.offsetY, rIris, source.height - rIris);
+    updateDetectionByDrag({
+      ...currentDetection,
+      cx,
+      cy,
+    });
+  }
+
+  function handleCanvasPointerUp(event: PointerEvent<HTMLCanvasElement>) {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
+  function handleCanvasPointerLeave() {
+    if (!dragRef.current) setPointerSide(null);
+  }
+
+  const pointerSideLabel = pointerSide ? eyeOrientationLabel(eye, pointerSide) : "Move over eye";
+  const leftSideLabel = eyeOrientationLabel(eye, "left");
+  const rightSideLabel = eyeOrientationLabel(eye, "right");
+
   return (
-    <div className="grid lg:grid-cols-[1.4fr_1fr] gap-8">
+    <div className="grid lg:grid-cols-2 gap-8">
       <div className="space-y-4">
         <div
-          className={`relative rounded-2xl ${camOn ? "overflow-hidden aspect-video" : "aspect-auto"} bg-deep shadow-soft w-full mx-auto`}
+          className={`relative rounded-2xl ${camOn ? "overflow-hidden aspect-video" : ""} bg-deep shadow-soft w-full mx-auto`}
         >
           <video
             ref={videoRef}
@@ -328,7 +535,15 @@ export function EyeReader() {
             playsInline
             muted
           />
-          <canvas ref={canvasRef} className={`${camOn ? "hidden" : "block"} object-contain`} />
+          <canvas
+            ref={canvasRef}
+            className={`${camOn ? "hidden" : "block"} max-w-full h-auto object-contain ${imageReady && detection ? "cursor-grab touch-none" : ""}`}
+            onPointerDown={handleCanvasPointerDown}
+            onPointerMove={handleCanvasPointerMove}
+            onPointerUp={handleCanvasPointerUp}
+            onPointerCancel={handleCanvasPointerUp}
+            onPointerLeave={handleCanvasPointerLeave}
+          />
           {!camOn && !imageReady && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-primary-foreground gap-3 bg-deep/90">
               {openCvLoading ? (
@@ -352,6 +567,21 @@ export function EyeReader() {
           {!camOn && imageReady && detection && (
             <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium">
               Iris locked · r={Math.round(detection.rIris)}px
+            </div>
+          )}
+          {!camOn && imageReady && detection && (
+            <div className="absolute top-3 right-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
+              Mouse: {pointerSideLabel}
+            </div>
+          )}
+          {!camOn && imageReady && detection && (
+            <div className="pointer-events-none absolute inset-x-3 bottom-3 flex items-center justify-between gap-3 text-[11px] font-medium text-muted-foreground">
+              <span className="rounded-full bg-background/80 px-3 py-1 backdrop-blur">
+                ← {leftSideLabel}
+              </span>
+              <span className="rounded-full bg-background/80 px-3 py-1 text-right backdrop-blur">
+                {rightSideLabel} →
+              </span>
             </div>
           )}
           {camOn && (
@@ -455,58 +685,23 @@ export function EyeReader() {
               <div>
                 <div className="text-sm font-medium">Fine-tune the iris overlay</div>
                 <p className="text-xs text-muted-foreground">
-                  Adjust the circle position and size to match the eye before reading.
+                  Drag the circle to move it, the green handle to resize it, and the blue dashed
+                  eyelid lines to exclude covered areas.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={resetDetection}
-                className="rounded-md bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground hover:bg-secondary/80 transition"
-              >
-                Reset
-              </button>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <label className="space-y-2 text-xs text-muted-foreground">
-                <span className="block text-[11px] uppercase tracking-[0.18em]">X position</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={sourceImageDataRef.current.width}
-                  value={detection.cx}
-                  onChange={(event) => updateDetection({ cx: Number(event.target.value) })}
-                  className="w-full"
-                />
-              </label>
-              <label className="space-y-2 text-xs text-muted-foreground">
-                <span className="block text-[11px] uppercase tracking-[0.18em]">Y position</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={sourceImageDataRef.current.height}
-                  value={detection.cy}
-                  onChange={(event) => updateDetection({ cy: Number(event.target.value) })}
-                  className="w-full"
-                />
-              </label>
-              <label className="space-y-2 text-xs text-muted-foreground">
-                <span className="block text-[11px] uppercase tracking-[0.18em]">Iris size</span>
-                <input
-                  type="range"
-                  min={20}
-                  max={
-                    Math.min(sourceImageDataRef.current.width, sourceImageDataRef.current.height) /
-                    2
-                  }
-                  value={detection.rIris}
-                  onChange={(event) => updateDetection({ rIris: Number(event.target.value) })}
-                  className="w-full"
-                />
-              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={resetDetection}
+                  className="rounded-md bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground hover:bg-secondary/80 transition"
+                >
+                  Reset
+                </button>
+              </div>
             </div>
             <div className="text-xs text-muted-foreground">
-              Use these sliders to move the region and resize the iris overlay. Press{" "}
-              <em>Read this iris</em> when the ring matches the eye.
+              The reading ignores pixels above the upper eyelid curve and below the lower eyelid
+              curve. Press <em>Read this iris</em> when the mask matches the visible iris.
             </div>
           </div>
         )}
@@ -619,6 +814,106 @@ function toneDescription(r: number, g: number, b: number) {
   return `Tone balance R${Math.round(r)} G${Math.round(g)} B${Math.round(b)}.`;
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function eyeOrientationLabel(eye: Eye, side: PointerSide) {
+  const noseSide: PointerSide = eye === "right" ? "right" : "left";
+  return side === noseSide ? "Nose / other eye side" : "Temple side";
+}
+
+function eyelidCurveY(
+  detection: Detection,
+  eyelidMask: EyelidMask,
+  lid: "upper" | "lower",
+  x: number,
+) {
+  const normalizedX = clamp((x - detection.cx) / detection.rIris, -1, 1);
+  const edgeCurve = detection.rIris * 0.18 * normalizedX * normalizedX;
+
+  if (lid === "upper") return detection.cy + detection.rIris * eyelidMask.topOffset + edgeCurve;
+  return detection.cy + detection.rIris * eyelidMask.bottomOffset - edgeCurve;
+}
+
+function eyelidDragModeFromPoint(
+  detection: Detection,
+  eyelidMask: EyelidMask,
+  point: CanvasPoint,
+): Extract<DragMode, "upperLid" | "lowerLid"> | null {
+  if (point.x < detection.cx - detection.rIris || point.x > detection.cx + detection.rIris) {
+    return null;
+  }
+
+  const upperDistance = Math.abs(point.y - eyelidCurveY(detection, eyelidMask, "upper", point.x));
+  const lowerDistance = Math.abs(point.y - eyelidCurveY(detection, eyelidMask, "lower", point.x));
+  const closestDistance = Math.min(upperDistance, lowerDistance);
+
+  if (closestDistance > EYELID_LINE_HIT_SIZE) return null;
+  return upperDistance <= lowerDistance ? "upperLid" : "lowerLid";
+}
+
+function eyelidOffsetFromPoint(detection: Detection, lid: "upper" | "lower", point: CanvasPoint) {
+  const normalizedX = clamp((point.x - detection.cx) / detection.rIris, -1, 1);
+  const edgeCurve = detection.rIris * 0.18 * normalizedX * normalizedX;
+
+  if (lid === "upper") return (point.y - detection.cy - edgeCurve) / detection.rIris;
+  return (point.y - detection.cy + edgeCurve) / detection.rIris;
+}
+
+function isVisibleThroughEyelids(
+  detection: Detection,
+  eyelidMask: EyelidMask,
+  x: number,
+  y: number,
+) {
+  return (
+    y >= eyelidCurveY(detection, eyelidMask, "upper", x) &&
+    y <= eyelidCurveY(detection, eyelidMask, "lower", x)
+  );
+}
+
+function drawEyelidMask(
+  ctx: CanvasRenderingContext2D,
+  detection: Detection,
+  eyelidMask: EyelidMask,
+) {
+  const left = detection.cx - detection.rIris;
+  const right = detection.cx + detection.rIris;
+  const steps = 56;
+
+  ctx.save();
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = "#60A5FA";
+  ctx.setLineDash([14, 8]);
+
+  for (const lid of ["upper", "lower"] as const) {
+    ctx.beginPath();
+    for (let index = 0; index <= steps; index++) {
+      const x = left + ((right - left) * index) / steps;
+      const y = eyelidCurveY(detection, eyelidMask, lid, x);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#60A5FA";
+  ctx.strokeStyle = "#EAF7EF";
+  ctx.lineWidth = 5;
+
+  for (const lid of ["upper", "lower"] as const) {
+    const y = eyelidCurveY(detection, eyelidMask, lid, detection.cx);
+    ctx.beginPath();
+    ctx.arc(detection.cx, y, EYELID_HANDLE_SIZE, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 function matFromImageData(cv: any, imageData: ImageData) {
   if (typeof cv.matFromImageData === "function") return cv.matFromImageData(imageData);
   return cv.matFromArray(imageData.height, imageData.width, cv.CV_8UC4, imageData.data);
@@ -673,7 +968,45 @@ function detectIrisInCv(cv: any, imageData: ImageData): Detection | null {
   }
 }
 
-function analyzeIrisInCv(cv: any, imageData: ImageData, detection: Detection): IrisReport {
+function buildIrisMask(
+  cv: any,
+  width: number,
+  height: number,
+  detection: Detection,
+  eyelidMask: EyelidMask,
+  options: { excludePupil?: boolean; outerRingOnly?: boolean } = {},
+) {
+  const maskData = new Uint8Array(width * height);
+  const minX = Math.max(0, Math.floor(detection.cx - detection.rIris - 1));
+  const maxX = Math.min(width - 1, Math.ceil(detection.cx + detection.rIris + 1));
+  const minY = Math.max(0, Math.floor(detection.cy - detection.rIris - 1));
+  const maxY = Math.min(height - 1, Math.ceil(detection.cy + detection.rIris + 1));
+  const irisSq = detection.rIris * detection.rIris;
+  const pupilSq = detection.rPupil * detection.rPupil;
+  const outerInnerSq = detection.rIris * 0.85 * detection.rIris * 0.85;
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const dx = x - detection.cx;
+      const dy = y - detection.cy;
+      const distanceSq = dx * dx + dy * dy;
+      if (distanceSq > irisSq) continue;
+      if (options.excludePupil !== false && distanceSq < pupilSq) continue;
+      if (options.outerRingOnly && distanceSq < outerInnerSq) continue;
+      if (!isVisibleThroughEyelids(detection, eyelidMask, x, y)) continue;
+      maskData[y * width + x] = 255;
+    }
+  }
+
+  return cv.matFromArray(height, width, cv.CV_8UC1, maskData);
+}
+
+function analyzeIrisInCv(
+  cv: any,
+  imageData: ImageData,
+  detection: Detection,
+  eyelidMask: EyelidMask,
+): IrisReport {
   const { cx, cy, rIris, rPupil } = detection;
   let src: any;
   let gray: any;
@@ -682,9 +1015,7 @@ function analyzeIrisInCv(cv: any, imageData: ImageData, detection: Detection): I
 
   try {
     src = matFromImageData(cv, imageData);
-    mask = new cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC1);
-    cv.circle(mask, new cv.Point(cx, cy), Math.floor(rIris), new cv.Scalar(255), -1);
-    cv.circle(mask, new cv.Point(cx, cy), Math.floor(rPupil), new cv.Scalar(0), -1);
+    mask = buildIrisMask(cv, src.cols, src.rows, detection, eyelidMask);
 
     const mean = cv.mean(src, mask);
     const [r, g, b] = [mean[0], mean[1], mean[2]];
@@ -712,6 +1043,7 @@ function analyzeIrisInCv(cv: any, imageData: ImageData, detection: Detection): I
           const px = Math.round(cx + Math.cos(angle) * rr);
           const py = Math.round(cy + Math.sin(angle) * rr);
           if (px < 0 || py < 0 || px >= gray.cols || py >= gray.rows) continue;
+          if (!isVisibleThroughEyelids(detection, eyelidMask, px, py)) continue;
           const val = gray.ucharPtr(py, px)[0];
           sum += val;
           sumSq += val * val;
@@ -748,9 +1080,10 @@ function analyzeIrisInCv(cv: any, imageData: ImageData, detection: Detection): I
     }
 
     const ringObservations: string[] = [];
-    outerMask = new cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC1);
-    cv.circle(outerMask, new cv.Point(cx, cy), Math.floor(rIris), new cv.Scalar(255), -1);
-    cv.circle(outerMask, new cv.Point(cx, cy), Math.floor(rIris * 0.85), new cv.Scalar(0), -1);
+    outerMask = buildIrisMask(cv, src.cols, src.rows, detection, eyelidMask, {
+      excludePupil: false,
+      outerRingOnly: true,
+    });
     const outerMean = cv.mean(src, outerMask);
 
     if (outerMean[0] + outerMean[1] + outerMean[2] < (r + g + b) * 0.75) {

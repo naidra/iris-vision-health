@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { IridologyChart } from "@/components/IridologyChart";
+import { IridologySimplifiedLessons } from "@/components/IridologySimplifiedLessons";
 import { useState } from "react";
 
 export const Route = createFileRoute("/lessons")({
@@ -107,6 +108,7 @@ const LESSONS: Lesson[] = [
 
 function LessonsPage() {
   const [chartEye, setChartEye] = useState<"right" | "left">("right");
+  const [activeTab, setActiveTab] = useState<"lessons" | "simplified">("lessons");
 
   return (
     <main className="mx-auto max-w-6xl px-6 pt-12 pb-24">
@@ -120,60 +122,85 @@ function LessonsPage() {
         </p>
       </header>
 
-      <div className="grid lg:grid-cols-[1fr_320px] gap-12">
-        <ol className="space-y-10">
-          {LESSONS.map((l) => (
-            <li key={l.n} className="bg-card border border-border rounded-2xl p-7 shadow-soft">
-              <div className="flex items-baseline gap-3">
-                <span className="font-display text-3xl text-primary">
-                  {String(l.n).padStart(2, "0")}
-                </span>
-                <h2 className="font-display text-2xl">{l.title}</h2>
-              </div>
-              <div className="text-xs uppercase tracking-wider text-muted-foreground mt-1 ml-12">
-                {l.source}
-              </div>
-              <div className="mt-5 ml-12 space-y-3 text-[15px] leading-relaxed text-foreground/90">
-                {l.body.map((p, i) => (
-                  <p key={i}>{p}</p>
-                ))}
-              </div>
-              <div className="mt-5 ml-12 bg-secondary/60 border-l-2 border-primary px-4 py-3 rounded">
-                <div className="text-[11px] uppercase tracking-wider text-primary font-semibold">
-                  Practice
-                </div>
-                <div className="text-sm mt-1">{l.practice}</div>
-              </div>
-            </li>
-          ))}
-        </ol>
-
-        <aside className="lg:sticky lg:top-24 lg:self-start space-y-4">
-          <div className="bg-card border border-border rounded-2xl p-6 shadow-soft">
-            <div className="mb-4 flex justify-center">
-              <div className="flex bg-secondary rounded-lg p-1 text-xs">
-                {(["right", "left"] as const).map((eye) => (
-                  <button
-                    key={eye}
-                    type="button"
-                    onClick={() => setChartEye(eye)}
-                    className={`px-3 py-1.5 rounded-md transition ${
-                      chartEye === eye ? "bg-background shadow-sm" : "text-muted-foreground"
-                    }`}
-                  >
-                    {eye[0].toUpperCase() + eye.slice(1)} eye
-                  </button>
-                ))}
-              </div>
-            </div>
-            <IridologyChart eye={chartEye} size={280} showPointerSideIndicator />
-          </div>
-          <div className="text-xs text-muted-foreground leading-relaxed">
-            Reference chart — switch between right and left iris mapping to compare mirrored body
-            regions.
-          </div>
-        </aside>
+      <div className="mb-8 inline-flex rounded-lg bg-secondary p-1 text-sm">
+        <button
+          type="button"
+          onClick={() => setActiveTab("lessons")}
+          className={`rounded-md px-4 py-2 transition ${
+            activeTab === "lessons" ? "bg-background shadow-sm" : "text-muted-foreground"
+          }`}
+        >
+          Lessons
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("simplified")}
+          className={`rounded-md px-4 py-2 transition ${
+            activeTab === "simplified" ? "bg-background shadow-sm" : "text-muted-foreground"
+          }`}
+        >
+          Iridology simplified
+        </button>
       </div>
+
+      {activeTab === "simplified" ? (
+        <IridologySimplifiedLessons />
+      ) : (
+        <div className="grid lg:grid-cols-[1fr_320px] gap-12">
+          <ol className="space-y-10">
+            {LESSONS.map((l) => (
+              <li key={l.n} className="bg-card border border-border rounded-2xl p-7 shadow-soft">
+                <div className="flex items-baseline gap-3">
+                  <span className="font-display text-3xl text-primary">
+                    {String(l.n).padStart(2, "0")}
+                  </span>
+                  <h2 className="font-display text-2xl">{l.title}</h2>
+                </div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground mt-1 ml-12">
+                  {l.source}
+                </div>
+                <div className="mt-5 ml-12 space-y-3 text-[15px] leading-relaxed text-foreground/90">
+                  {l.body.map((p, i) => (
+                    <p key={i}>{p}</p>
+                  ))}
+                </div>
+                <div className="mt-5 ml-12 bg-secondary/60 border-l-2 border-primary px-4 py-3 rounded">
+                  <div className="text-[11px] uppercase tracking-wider text-primary font-semibold">
+                    Practice
+                  </div>
+                  <div className="text-sm mt-1">{l.practice}</div>
+                </div>
+              </li>
+            ))}
+          </ol>
+
+          <aside className="lg:sticky lg:top-24 lg:self-start space-y-4">
+            <div className="bg-card border border-border rounded-2xl p-6 shadow-soft">
+              <div className="mb-4 flex justify-center">
+                <div className="flex bg-secondary rounded-lg p-1 text-xs">
+                  {(["right", "left"] as const).map((eye) => (
+                    <button
+                      key={eye}
+                      type="button"
+                      onClick={() => setChartEye(eye)}
+                      className={`px-3 py-1.5 rounded-md transition ${
+                        chartEye === eye ? "bg-background shadow-sm" : "text-muted-foreground"
+                      }`}
+                    >
+                      {eye[0].toUpperCase() + eye.slice(1)} eye
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <IridologyChart eye={chartEye} size={280} showPointerSideIndicator />
+            </div>
+            <div className="text-xs text-muted-foreground leading-relaxed">
+              Reference chart — switch between right and left iris mapping to compare mirrored body
+              regions.
+            </div>
+          </aside>
+        </div>
+      )}
     </main>
   );
 }

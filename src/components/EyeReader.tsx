@@ -22,6 +22,7 @@ interface Finding {
   zoneLeft: string;
   observation: string;
   confidence: number;
+  spot?: CanvasPoint;
 }
 
 interface IrisReport {
@@ -147,6 +148,7 @@ export function EyeReader() {
   }
 
   function updateDetectionByDrag(nextDetection: Detection) {
+    setReport(null);
     applyDetection(nextDetection);
     if (autoDetectionRef.current) setError(null);
   }
@@ -158,6 +160,7 @@ export function EyeReader() {
       autoDetectionRef.current ?? createManualDetectionFallback(source.width, source.height);
     updateEyelidMask(DEFAULT_EYELID_MASK);
     setPointerSide(null);
+    setReport(null);
     setDetection(next);
     detectionRef.current = next;
     redrawSourceWithOverlay(next, DEFAULT_EYELID_MASK);
@@ -225,6 +228,7 @@ export function EyeReader() {
       );
       const report = analyzeIrisInCv(window.cv, imageData, detection, eyelidMask);
       setReport(report);
+      redrawSourceWithOverlay(detection, eyelidMask, report);
       setError(null);
     } catch (e: any) {
       setError(`Analysis failed: ${e.message}`);
@@ -236,6 +240,7 @@ export function EyeReader() {
   function redrawSourceWithOverlay(
     currentDetection: Detection | null,
     currentEyelidMask = eyelidMask,
+    currentReport = report,
   ) {
     const c = canvasRef.current;
     const source = sourceImageDataRef.current;
@@ -247,13 +252,14 @@ export function EyeReader() {
     c.style.width = `${source.width}px`;
     c.style.height = "auto";
     ctx.putImageData(source, 0, 0);
-    if (currentDetection) drawOverlay(ctx, currentDetection, currentEyelidMask);
+    if (currentDetection) drawOverlay(ctx, currentDetection, currentEyelidMask, currentReport);
   }
 
   function drawOverlay(
     ctx: CanvasRenderingContext2D,
     currentDetection: Detection,
     currentEyelidMask: EyelidMask,
+    currentReport: IrisReport | null,
   ) {
     const cx = currentDetection.cx;
     const cy = currentDetection.cy;
@@ -293,6 +299,7 @@ export function EyeReader() {
     ctx.stroke();
 
     drawEyelidMask(ctx, currentDetection, currentEyelidMask);
+    drawFindingMarkers(ctx, currentReport);
   }
 
   function getCanvasPoint(event: PointerEvent<HTMLCanvasElement>) {
@@ -795,6 +802,21 @@ function isVisibleThroughEyelids(
   );
 }
 
+function strongestSample<T extends CanvasPoint>(samples: T[], score: (sample: T) => number) {
+  let best: T | undefined;
+  let bestScore = -Infinity;
+
+  for (const sample of samples) {
+    const nextScore = score(sample);
+    if (nextScore > bestScore) {
+      best = sample;
+      bestScore = nextScore;
+    }
+  }
+
+  return best ? { x: best.x, y: best.y } : undefined;
+}
+
 function drawEyelidMask(
   ctx: CanvasRenderingContext2D,
   detection: Detection,
@@ -831,6 +853,34 @@ function drawEyelidMask(
     ctx.arc(handle.x, handle.y, EYELID_HANDLE_SIZE, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawFindingMarkers(ctx: CanvasRenderingContext2D, report: IrisReport | null) {
+  if (!report) return;
+  const spots = report.findings.filter((finding) => finding.spot && finding.confidence > 0.2);
+
+  ctx.save();
+  ctx.font = "700 11px Inter, ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  for (const finding of spots.slice(0, 8)) {
+    const spot = finding.spot;
+    if (!spot) continue;
+
+    ctx.fillStyle = "rgba(245, 158, 11, 0.9)";
+    ctx.strokeStyle = "#EAF7EF";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(spot.x, spot.y, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "#1F4D3A";
+    ctx.fillText(String(finding.hour), spot.x, spot.y + 0.5);
   }
 
   ctx.restore();
@@ -957,6 +1007,7 @@ function analyzeIrisInCv(
       let sum = 0;
       let sumSq = 0;
       let n = 0;
+      const samples: Array<CanvasPoint & { value: number }> = [];
 
       for (let radPct = 0.4; radPct < 0.95; radPct += 0.08) {
         for (let aStep = 0; aStep <= 4; aStep++) {
@@ -969,6 +1020,7 @@ function analyzeIrisInCv(
           const val = gray.ucharPtr(py, px)[0];
           sum += val;
           sumSq += val * val;
+          samples.push({ x: px, y: py, value: val });
           n++;
         }
       }
@@ -979,17 +1031,21 @@ function analyzeIrisInCv(
       const darkness = (overallMean - m) / Math.max(overallMean, 1);
       let observation = "Uniform fibers - no remarkable features.";
       let confidence = 0.2;
+      let spot: CanvasPoint | undefined;
 
       if (darkness > 0.18) {
         observation =
           "Darker patch detected - classically read as a 'lacuna' / weakened tissue sign.";
         confidence = Math.min(0.85, darkness * 2);
+        spot = strongestSample(samples, (sample) => -sample.value);
       } else if (variance > 900) {
         observation = "High fiber irregularity - Lindlahr's 'nerve ring' or stress pattern.";
         confidence = Math.min(0.75, variance / 1800);
+        spot = strongestSample(samples, (sample) => Math.abs(sample.value - m));
       } else if (darkness < -0.15) {
         observation = "Brighter zone - Jensen associates with acute / inflamed activity.";
         confidence = Math.min(0.7, -darkness * 2);
+        spot = strongestSample(samples, (sample) => sample.value);
       }
 
       findings.push({
@@ -998,6 +1054,7 @@ function analyzeIrisInCv(
         zoneLeft: zone.leftEye,
         observation,
         confidence,
+        spot,
       });
     }
 

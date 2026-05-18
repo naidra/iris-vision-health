@@ -271,7 +271,7 @@ export function EyeReader() {
     ctx.strokeStyle = "rgba(234,247,239,0.5)";
     ctx.lineWidth = 2;
     for (let h = 0; h < 12; h++) {
-      const a = (h / 12) * Math.PI * 2 - Math.PI / 2;
+      const a = (h / 12) * Math.PI * 2 - Math.PI / 2 - Math.PI / 12;
       ctx.beginPath();
       ctx.moveTo(
         cx + Math.cos(a) * currentDetection.rPupil,
@@ -516,7 +516,7 @@ export function EyeReader() {
             </div>
           )}
           {imageReady && detection && (
-            <div className="pointer-events-none absolute top-3 right-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
+            <div className=" hidden pointer-events-none absolute top-3 right-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
               Mouse: {pointerSideLabel}
             </div>
           )}

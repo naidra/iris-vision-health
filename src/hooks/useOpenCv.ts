@@ -7,6 +7,10 @@ declare global {
   }
 }
 
+function localOpenCvUrl() {
+  return new URL("opencv.js", window.location.origin + import.meta.env.BASE_URL).href;
+}
+
 function waitForCvReady(onReady: (cv: any) => void, onError: (message: string) => void) {
   let settled = false;
 
@@ -67,6 +71,7 @@ export function useOpenCv() {
     const existingScript = document.querySelector<HTMLScriptElement>(
       'script[data-opencv-local="true"]',
     );
+    const scriptSrc = localOpenCvUrl();
 
     const finish = (cv: any) => {
       if (cv && cv.Mat) {
@@ -87,13 +92,15 @@ export function useOpenCv() {
       setError(message);
     };
 
-    if (existingScript) {
+    if (existingScript?.src === scriptSrc) {
       waitForCvReady(finish, fail);
       return;
     }
 
+    existingScript?.remove();
+
     const script = document.createElement("script");
-    script.src = new URL("opencv.js", location.href.replace('/reader', '')).href;
+    script.src = scriptSrc;
     script.async = true;
     script.dataset.opencvLocal = "true";
 

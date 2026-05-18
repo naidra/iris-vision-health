@@ -40,11 +40,10 @@ function AboutPage() {
         <h2 className="font-display text-2xl">How it works</h2>
         <p className="text-foreground/90">
           The app loads a vendored OpenCV.js build from this project and runs it locally in the
-          browser. Your webcam stream is captured with the standard WebRTC API and processed on
-          downsampled frames:
+          browser. Your chosen eye image is drawn to a local canvas and processed in your tab:
         </p>
         <ol className="list-decimal pl-5 space-y-1.5 text-foreground/90">
-          <li>OpenCV grayscale conversion and median blur reduce camera noise.</li>
+          <li>OpenCV grayscale conversion and median blur reduce image noise.</li>
           <li>OpenCV's Hough Circle Transform locates the iris and estimates the pupil.</li>
           <li>
             The annular iris region is sampled in 12 wedges; mean intensity and variance per wedge
@@ -76,8 +75,8 @@ function AboutPage() {
       <section className="mt-10 space-y-3">
         <h2 className="font-display text-2xl">Privacy</h2>
         <p className="text-foreground/90">
-          The camera permission is requested only when you press <em>Start camera</em>. Stopping the
-          camera tears down the stream. The page contains no third-party trackers.
+          The selected image is processed only inside your browser tab. The page contains no
+          third-party trackers.
         </p>
       </section>
 

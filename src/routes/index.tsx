@@ -91,7 +91,7 @@ function Home() {
           {
             icon: ScanEye,
             title: "OpenCV iris lock",
-            body: "A local OpenCV.js worker runs Hough Circle detection on webcam frames, then overlays the 12 traditional sectors live.",
+            body: "A local OpenCV.js worker runs Hough Circle detection on your chosen eye image, then overlays the 12 traditional sectors.",
           },
           {
             icon: BookOpen,
@@ -101,7 +101,7 @@ function Home() {
           {
             icon: ShieldCheck,
             title: "Privacy by design",
-            body: "Your camera stream never leaves the browser. There is no backend, no logging, no upload. Stop the camera and it's gone.",
+            body: "Your selected image never leaves the browser. There is no backend, no logging, and no upload.",
           },
         ].map((c) => (
           <div key={c.title} className="bg-card border border-border rounded-2xl p-6 shadow-soft">

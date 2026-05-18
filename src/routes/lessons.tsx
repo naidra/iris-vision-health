@@ -166,7 +166,7 @@ function LessonsPage() {
                 ))}
               </div>
             </div>
-            <IridologyChart eye={chartEye} size={280} />
+            <IridologyChart eye={chartEye} size={280} showPointerSideIndicator />
           </div>
           <div className="text-xs text-muted-foreground leading-relaxed">
             Reference chart — switch between right and left iris mapping to compare mirrored body

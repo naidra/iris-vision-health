@@ -1,15 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { ChangeEvent, PointerEvent } from "react";
-import { useEffect, useRef, useState } from "react";
-import {
-  Camera,
-  Loader2,
-  ScanEye,
-  AlertTriangle,
-  CircleStop,
-  ImagePlus,
-  HelpCircle,
-} from "lucide-react";
+import { useRef, useState } from "react";
+import { Loader2, ScanEye, AlertTriangle, ImagePlus, HelpCircle } from "lucide-react";
 import { useOpenCv } from "@/hooks/useOpenCv";
 
 interface Detection {
@@ -53,10 +45,8 @@ const EYELID_LINE_HIT_SIZE = 34;
 const DEFAULT_EYELID_MASK: EyelidMask = { topOffset: -0.72, bottomOffset: 0.78 };
 
 export function EyeReader() {
-  const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
   const detectionRef = useRef<Detection | null>(null);
   const eyelidMaskRef = useRef<EyelidMask>(DEFAULT_EYELID_MASK);
   const sourceImageDataRef = useRef<ImageData | null>(null);
@@ -68,7 +58,6 @@ export function EyeReader() {
   } | null>(null);
 
   const { ready: openCvReady, loading: openCvLoading, error: openCvError } = useOpenCv();
-  const [camOn, setCamOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detection, setDetection] = useState<Detection | null>(null);
   const [imageReady, setImageReady] = useState(false);
@@ -80,74 +69,9 @@ export function EyeReader() {
   const displayedError = error ?? openCvError;
   const autoDetectionRef = useRef<Detection | null>(null);
 
-  useEffect(() => {
-    return () => stopCamera();
-  }, []);
-
   function updateEyelidMask(nextMask: EyelidMask) {
     eyelidMaskRef.current = nextMask;
     setEyelidMask(nextMask);
-  }
-
-  async function startCamera() {
-    setError(null);
-
-    try {
-      setReport(null);
-      setDetection(null);
-      updateEyelidMask(DEFAULT_EYELID_MASK);
-      setPointerSide(null);
-      detectionRef.current = null;
-      sourceImageDataRef.current = null;
-      setImageReady(false);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      setCamOn(true);
-    } catch (e: any) {
-      setError(`Camera access denied: ${e.message}. Allow camera permission and retry.`);
-    }
-  }
-
-  function stopCamera() {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
-    setCamOn(false);
-  }
-
-  async function capturePhoto() {
-    const v = videoRef.current;
-    const c = canvasRef.current;
-    if (!v || !c || v.readyState < 2) {
-      setError("Camera is not ready yet.");
-      return;
-    }
-
-    const displayScale = Math.min(1, MAX_DISPLAY_WIDTH / v.videoWidth);
-    const displayWidth = Math.round(v.videoWidth * displayScale);
-    const displayHeight = Math.round(v.videoHeight * displayScale);
-    if (c.width !== displayWidth || c.height !== displayHeight) {
-      const DPR = window.devicePixelRatio || 1;
-      const internalW = Math.round(displayWidth * DPR);
-      const internalH = Math.round(displayHeight * DPR);
-      c.width = internalW;
-      c.height = internalH;
-      c.style.width = `${displayWidth}px`;
-      c.style.height = `${displayHeight}px`;
-    }
-
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(v, 0, 0, c.width, c.height);
-    stopCamera();
-    await processCanvasImage();
   }
 
   async function chooseImage(event: ChangeEvent<HTMLInputElement>) {
@@ -167,7 +91,6 @@ export function EyeReader() {
       updateEyelidMask(DEFAULT_EYELID_MASK);
       setPointerSide(null);
       detectionRef.current = null;
-      stopCamera();
       const image = await fileToImage(file);
       drawImageToCanvas(image);
       // Yield so the drawn image and loader can render before heavy CV processing.
@@ -385,7 +308,7 @@ export function EyeReader() {
   function updatePointerSide(event: PointerEvent<HTMLCanvasElement>) {
     const point = getCanvasPoint(event);
     const currentDetection = detectionRef.current;
-    if (!point || !currentDetection || camOn) {
+    if (!point || !currentDetection) {
       setPointerSide(null);
       return;
     }
@@ -394,7 +317,7 @@ export function EyeReader() {
   }
 
   function handleCanvasPointerDown(event: PointerEvent<HTMLCanvasElement>) {
-    if (!imageReady || !detection || camOn) return;
+    if (!imageReady || !detection) return;
     updatePointerSide(event);
     const point = getCanvasPoint(event);
     if (!point) return;
@@ -526,25 +449,17 @@ export function EyeReader() {
   return (
     <div className="grid lg:grid-cols-2 gap-8">
       <div className="space-y-4">
-        <div
-          className={`relative rounded-2xl ${camOn ? "overflow-hidden aspect-video" : ""} bg-deep shadow-soft w-full mx-auto`}
-        >
-          <video
-            ref={videoRef}
-            className={`w-full h-full object-cover ${camOn ? "block" : "hidden"}`}
-            playsInline
-            muted
-          />
+        <div className="relative rounded-2xl bg-deep shadow-soft w-full mx-auto">
           <canvas
             ref={canvasRef}
-            className={`${camOn ? "hidden" : "block"} max-w-full h-auto object-contain ${imageReady && detection ? "cursor-grab touch-none" : ""}`}
+            className={`block max-w-full h-auto object-contain ${imageReady && detection ? "cursor-grab touch-none" : ""}`}
             onPointerDown={handleCanvasPointerDown}
             onPointerMove={handleCanvasPointerMove}
             onPointerUp={handleCanvasPointerUp}
             onPointerCancel={handleCanvasPointerUp}
             onPointerLeave={handleCanvasPointerLeave}
           />
-          {!camOn && !imageReady && (
+          {!imageReady && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-primary-foreground gap-3 bg-deep/90">
               {openCvLoading ? (
                 <>
@@ -554,27 +469,22 @@ export function EyeReader() {
               ) : (
                 <>
                   <ScanEye className="h-10 w-10" />
-                  <p className="text-sm opacity-80">Camera off</p>
+                  <p className="text-sm opacity-80">Choose an eye image to begin</p>
                 </>
               )}
             </div>
           )}
-          {camOn && detection && (
+          {imageReady && detection && (
             <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium">
               Iris locked · r={Math.round(detection.rIris)}px
             </div>
           )}
-          {!camOn && imageReady && detection && (
-            <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium">
-              Iris locked · r={Math.round(detection.rIris)}px
-            </div>
-          )}
-          {!camOn && imageReady && detection && (
+          {imageReady && detection && (
             <div className="absolute top-3 right-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
               Mouse: {pointerSideLabel}
             </div>
           )}
-          {!camOn && imageReady && detection && (
+          {imageReady && detection && (
             <div className="pointer-events-none absolute inset-x-3 bottom-3 flex items-center justify-between gap-3 text-[11px] font-medium text-muted-foreground">
               <span className="rounded-full bg-background/80 px-3 py-1 backdrop-blur">
                 ← {leftSideLabel}
@@ -584,18 +494,13 @@ export function EyeReader() {
               </span>
             </div>
           )}
-          {camOn && (
-            <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
-              Preview only. Capture a still image to scan.
-            </div>
-          )}
-          {!camOn && imageReady && analyzing && !detection && (
+          {imageReady && analyzing && !detection && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-primary-foreground gap-3 bg-deep/90">
               <Loader2 className="h-8 w-8 animate-spin" />
               <p className="text-sm opacity-80">Analyzing the image…</p>
             </div>
           )}
-          {!camOn && imageReady && !detection && !analyzing && (
+          {imageReady && !detection && !analyzing && (
             <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
               No iris locked
             </div>
@@ -610,45 +515,10 @@ export function EyeReader() {
             className="hidden"
             onChange={chooseImage}
           />
-          {!camOn ? (
-            <button
-              onClick={startCamera}
-              disabled={!openCvReady || openCvLoading}
-              className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg font-medium shadow-soft hover:brightness-110 transition disabled:opacity-50"
-            >
-              {openCvLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Camera className="h-4 w-4" />
-              )}
-              Start camera
-            </button>
-          ) : (
-            <>
-              <button
-                onClick={capturePhoto}
-                disabled={!openCvReady || analyzing}
-                className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg font-medium shadow-soft hover:brightness-110 transition disabled:opacity-50"
-              >
-                {analyzing ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Camera className="h-4 w-4" />
-                )}
-                Take photo
-              </button>
-              <button
-                onClick={stopCamera}
-                className="inline-flex items-center gap-2 bg-secondary text-secondary-foreground px-5 py-2.5 rounded-lg font-medium hover:bg-secondary/80 transition"
-              >
-                <CircleStop className="h-4 w-4" /> Stop
-              </button>
-            </>
-          )}
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={!openCvReady || openCvLoading || analyzing}
-            className="inline-flex items-center gap-2 bg-secondary text-secondary-foreground px-5 py-2.5 rounded-lg font-medium hover:bg-secondary/80 transition disabled:opacity-50"
+            className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg font-medium shadow-soft hover:brightness-110 transition disabled:opacity-50"
           >
             <ImagePlus className="h-4 w-4" /> Choose an eye image
           </button>
@@ -713,8 +583,8 @@ export function EyeReader() {
         )}
 
         <p className="text-xs text-muted-foreground leading-relaxed">
-          Tip: bright, even lighting; hold the eye 15–25cm from the camera; look slightly to the
-          side to reduce glare. OpenCV scans only captured or chosen still images.
+          Tip: use a bright, evenly lit close-up eye photo and look slightly to the side to reduce
+          glare. OpenCV scans only the image you choose.
         </p>
       </div>
 
@@ -723,7 +593,7 @@ export function EyeReader() {
         {!report && (
           <p className="text-sm text-muted-foreground">
             No reading yet. Lock onto an iris, then press <em>Read this iris</em>. The analysis runs
-            entirely in your browser — no frames leave your device.
+            entirely in your browser — no image leaves your device.
           </p>
         )}
         {report && (

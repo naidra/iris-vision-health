@@ -34,11 +34,12 @@ interface IrisReport {
 
 type Eye = "right" | "left";
 type PointerSide = "left" | "right";
-type DragMode = "move" | "resize" | "upperLid" | "lowerLid";
+type DragMode = "move" | "resize" | "resizePupil" | "upperLid" | "lowerLid";
 type CanvasPoint = { x: number; y: number };
 
 const MAX_DISPLAY_WIDTH = 960;
 const IRIS_HANDLE_SIZE = 14;
+const PUPIL_HANDLE_SIZE = 11;
 const EYELID_HANDLE_SIZE = 12;
 const HANDLE_HIT_MULTIPLIER = 3.4;
 const EYELID_HANDLE_HIT_SIZE = 40;
@@ -298,6 +299,14 @@ export function EyeReader() {
     ctx.fill();
     ctx.stroke();
 
+    ctx.fillStyle = "#EAF7EF";
+    ctx.strokeStyle = "#1F4D3A";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(cx + currentDetection.rPupil, cy, PUPIL_HANDLE_SIZE, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
     drawEyelidMask(ctx, currentDetection, currentEyelidMask);
     drawFindingMarkers(ctx, currentReport);
   }
@@ -333,11 +342,13 @@ export function EyeReader() {
     if (!point) return;
 
     const currentEyelidMask = eyelidMaskRef.current;
-    const handleX = currentDetection.cx + currentDetection.rIris;
+    const irisHandleX = currentDetection.cx + currentDetection.rIris;
+    const pupilHandleX = currentDetection.cx + currentDetection.rPupil;
     const handleY = currentDetection.cy;
     const upperEyelidHandle = eyelidHandlePoint(currentDetection, currentEyelidMask, "upper");
     const lowerEyelidHandle = eyelidHandlePoint(currentDetection, currentEyelidMask, "lower");
-    const handleDistance = Math.hypot(point.x - handleX, point.y - handleY);
+    const irisHandleDistance = Math.hypot(point.x - irisHandleX, point.y - handleY);
+    const pupilHandleDistance = Math.hypot(point.x - pupilHandleX, point.y - handleY);
     const upperHandleDistance = Math.hypot(
       point.x - upperEyelidHandle.x,
       point.y - upperEyelidHandle.y,
@@ -368,7 +379,9 @@ export function EyeReader() {
       mode = "lowerLid";
     } else if (eyelidLineHit) {
       mode = eyelidLineHit;
-    } else if (handleDistance <= IRIS_HANDLE_SIZE * HANDLE_HIT_MULTIPLIER || nearRing) {
+    } else if (pupilHandleDistance <= PUPIL_HANDLE_SIZE * HANDLE_HIT_MULTIPLIER) {
+      mode = "resizePupil";
+    } else if (irisHandleDistance <= IRIS_HANDLE_SIZE * HANDLE_HIT_MULTIPLIER || nearRing) {
       mode = "resize";
     }
 
@@ -452,7 +465,18 @@ export function EyeReader() {
       updateDetectionByDrag({
         ...currentDetection,
         rIris,
-        rPupil: rIris * 0.35,
+        rPupil: clampPupilRadius(currentDetection.rPupil, rIris),
+      });
+      return;
+    }
+
+    if (drag.mode === "resizePupil") {
+      updateDetectionByDrag({
+        ...currentDetection,
+        rPupil: clampPupilRadius(
+          Math.hypot(point.x - currentDetection.cx, point.y - currentDetection.cy),
+          currentDetection.rIris,
+        ),
       });
       return;
     }
@@ -592,8 +616,9 @@ export function EyeReader() {
               <div>
                 <div className="text-sm font-medium">Fine-tune the iris overlay</div>
                 <p className="text-xs text-muted-foreground">
-                  Drag the circle to move it, the green handle to resize it, and use the eyelid
-                  sliders at the bottom of the image to exclude covered areas.
+                  Drag the circle to move it, the green handle to resize the iris, the white handle
+                  to resize the pupil, and use the eyelid sliders at the bottom of the image to
+                  exclude covered areas.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -723,6 +748,10 @@ function toneDescription(r: number, g: number, b: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function clampPupilRadius(radius: number, irisRadius: number) {
+  return clamp(radius, 5, Math.max(5, irisRadius - 8));
 }
 
 function waitForLoaderPaint() {

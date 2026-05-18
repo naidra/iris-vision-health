@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { IrisOrganImages } from "@/components/IrisOrganImages";
 import { IridologyChart } from "@/components/IridologyChart";
 import { IridologySimplifiedLessons } from "@/components/IridologySimplifiedLessons";
 import { useState } from "react";
@@ -108,7 +109,7 @@ const LESSONS: Lesson[] = [
 
 function LessonsPage() {
   const [chartEye, setChartEye] = useState<"right" | "left">("right");
-  const [activeTab, setActiveTab] = useState<"lessons" | "simplified">("lessons");
+  const [activeTab, setActiveTab] = useState<"lessons" | "simplified" | "images">("lessons");
 
   return (
     <main className="mx-auto max-w-6xl px-6 pt-12 pb-24">
@@ -141,9 +142,20 @@ function LessonsPage() {
         >
           Iridology simplified
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("images")}
+          className={`rounded-md px-4 py-2 transition ${
+            activeTab === "images" ? "bg-background shadow-sm" : "text-muted-foreground"
+          }`}
+        >
+          Images
+        </button>
       </div>
 
-      {activeTab === "simplified" ? (
+      {activeTab === "images" ? (
+        <IrisOrganImages />
+      ) : activeTab === "simplified" ? (
         <IridologySimplifiedLessons />
       ) : (
         <div className="grid lg:grid-cols-[1fr_320px] gap-12">

@@ -102,9 +102,19 @@
   .bg-hero { background: var(--gradient-hero); }
   .shadow-soft { box-shadow: var(--shadow-soft); }
   .shadow-glow { box-shadow: var(--shadow-glow); }
+  .iris-loader-spin {
+    animation: iris-loader-spin 0.8s linear infinite;
+    transform-origin: center;
+  }
   .iris-ring {
     background: var(--gradient-iris);
     -webkit-mask: radial-gradient(circle, transparent 38%, #000 40%, #000 100%);
             mask: radial-gradient(circle, transparent 38%, #000 40%, #000 100%);
+  }
+}
+
+@keyframes iris-loader-spin {
+  to {
+    transform: rotate(360deg);
   }
 }

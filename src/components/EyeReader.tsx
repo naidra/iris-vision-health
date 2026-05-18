@@ -37,11 +37,15 @@ type DragMode = "move" | "resize" | "upperLid" | "lowerLid";
 type CanvasPoint = { x: number; y: number };
 
 const MAX_DISPLAY_WIDTH = 960;
-const IRIS_HANDLE_SIZE = 22;
-const EYELID_HANDLE_SIZE = 24;
+const IRIS_HANDLE_SIZE = 14;
+const EYELID_HANDLE_SIZE = 12;
 const HANDLE_HIT_MULTIPLIER = 3.4;
-const EYELID_HANDLE_HIT_SIZE = 56;
-const EYELID_LINE_HIT_SIZE = 34;
+const EYELID_HANDLE_HIT_SIZE = 40;
+const EYELID_LINE_HIT_SIZE = 44;
+const EYELID_LINE_HIT_RADIUS_RATIO = 0.12;
+const EYELID_MIN_GAP = 0.18;
+const EYELID_OFFSET_MIN = -1.05;
+const EYELID_OFFSET_MAX = 1.05;
 const DEFAULT_EYELID_MASK: EyelidMask = { topOffset: -0.72, bottomOffset: 0.78 };
 
 export function EyeReader() {
@@ -61,6 +65,7 @@ export function EyeReader() {
   const [error, setError] = useState<string | null>(null);
   const [detection, setDetection] = useState<Detection | null>(null);
   const [imageReady, setImageReady] = useState(false);
+  const [imageLoading, setImageLoading] = useState(false);
   const [eye, setEye] = useState<Eye>("right");
   const [report, setReport] = useState<IrisReport | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
@@ -85,7 +90,8 @@ export function EyeReader() {
 
     try {
       setError(null);
-      setAnalyzing(true);
+      setImageLoading(true);
+      setAnalyzing(false);
       setReport(null);
       setDetection(null);
       updateEyelidMask(DEFAULT_EYELID_MASK);
@@ -93,12 +99,14 @@ export function EyeReader() {
       detectionRef.current = null;
       const image = await fileToImage(file);
       drawImageToCanvas(image);
-      // Yield so the drawn image and loader can render before heavy CV processing.
-      await new Promise((resolve) => requestAnimationFrame(resolve));
+      setImageReady(true);
+      // Let the loader paint before synchronous OpenCV work starts.
+      await waitForLoaderPaint();
       await processCanvasImage();
     } catch (e: any) {
       setError(`Image failed to load: ${e.message}`);
     } finally {
+      setImageLoading(false);
       setAnalyzing(false);
     }
   }
@@ -109,20 +117,16 @@ export function EyeReader() {
     const scale = Math.min(1, MAX_DISPLAY_WIDTH / image.naturalWidth);
     const displayW = Math.round(image.naturalWidth * scale);
     const displayH = Math.round(image.naturalHeight * scale);
-    const DPR = window.devicePixelRatio || 1;
-    const internalW = Math.round(displayW * DPR);
-    const internalH = Math.round(displayH * DPR);
 
-    c.width = internalW;
-    c.height = internalH;
-    // CSS pixel size
+    c.width = displayW;
+    c.height = displayH;
     c.style.width = `${displayW}px`;
-    c.style.height = `${displayH}px`;
+    c.style.height = "auto";
 
     const ctx = c.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
-    ctx.clearRect(0, 0, internalW, internalH);
-    ctx.drawImage(image, 0, 0, internalW, internalH);
+    ctx.clearRect(0, 0, displayW, displayH);
+    ctx.drawImage(image, 0, 0, displayW, displayH);
   }
 
   function createManualDetectionFallback(width: number, height: number): Detection {
@@ -238,12 +242,10 @@ export function EyeReader() {
     if (!c || !source) return;
     const ctx = c.getContext("2d");
     if (!ctx) return;
-    // `source.width`/`source.height` are in device pixels (canvas backing store).
-    const DPR = window.devicePixelRatio || 1;
     c.width = source.width;
     c.height = source.height;
-    c.style.width = `${Math.round(source.width / DPR)}px`;
-    c.style.height = `${Math.round(source.height / DPR)}px`;
+    c.style.width = `${source.width}px`;
+    c.style.height = "auto";
     ctx.putImageData(source, 0, 0);
     if (currentDetection) drawOverlay(ctx, currentDetection, currentEyelidMask);
   }
@@ -317,34 +319,45 @@ export function EyeReader() {
   }
 
   function handleCanvasPointerDown(event: PointerEvent<HTMLCanvasElement>) {
-    if (!imageReady || !detection) return;
+    const currentDetection = detectionRef.current ?? detection;
+    if (!imageReady || !currentDetection) return;
     updatePointerSide(event);
     const point = getCanvasPoint(event);
     if (!point) return;
 
-    const handleX = detection.cx + detection.rIris;
-    const handleY = detection.cy;
-    const upperHandleY = eyelidCurveY(detection, eyelidMask, "upper", detection.cx);
-    const lowerHandleY = eyelidCurveY(detection, eyelidMask, "lower", detection.cx);
+    const currentEyelidMask = eyelidMaskRef.current;
+    const handleX = currentDetection.cx + currentDetection.rIris;
+    const handleY = currentDetection.cy;
+    const upperEyelidHandle = eyelidHandlePoint(currentDetection, currentEyelidMask, "upper");
+    const lowerEyelidHandle = eyelidHandlePoint(currentDetection, currentEyelidMask, "lower");
     const handleDistance = Math.hypot(point.x - handleX, point.y - handleY);
-    const upperHandleDistance = Math.hypot(point.x - detection.cx, point.y - upperHandleY);
-    const lowerHandleDistance = Math.hypot(point.x - detection.cx, point.y - lowerHandleY);
-    const centerDistance = Math.hypot(point.x - detection.cx, point.y - detection.cy);
+    const upperHandleDistance = Math.hypot(
+      point.x - upperEyelidHandle.x,
+      point.y - upperEyelidHandle.y,
+    );
+    const lowerHandleDistance = Math.hypot(
+      point.x - lowerEyelidHandle.x,
+      point.y - lowerEyelidHandle.y,
+    );
+    const centerDistance = Math.hypot(point.x - currentDetection.cx, point.y - currentDetection.cy);
     const nearRing =
-      Math.abs(centerDistance - detection.rIris) <= Math.max(18, detection.rIris * 0.08);
-    const eyelidLineHit = eyelidDragModeFromPoint(detection, eyelidMask, point);
+      Math.abs(centerDistance - currentDetection.rIris) <=
+      Math.max(18, currentDetection.rIris * 0.08);
+    const eyelidHitSize = Math.max(
+      EYELID_LINE_HIT_SIZE,
+      currentDetection.rIris * EYELID_LINE_HIT_RADIUS_RATIO,
+    );
+    const eyelidLineHit = eyelidDragModeFromPoint(
+      currentDetection,
+      currentEyelidMask,
+      point,
+      eyelidHitSize,
+    );
     let mode: DragMode = "move";
 
-    const upperHandleHit =
-      upperHandleDistance <=
-      Math.max(EYELID_HANDLE_HIT_SIZE, EYELID_HANDLE_SIZE * HANDLE_HIT_MULTIPLIER);
-    const lowerHandleHit =
-      lowerHandleDistance <=
-      Math.max(EYELID_HANDLE_HIT_SIZE, EYELID_HANDLE_SIZE * HANDLE_HIT_MULTIPLIER);
-
-    if (upperHandleHit) {
+    if (upperHandleDistance <= EYELID_HANDLE_HIT_SIZE) {
       mode = "upperLid";
-    } else if (lowerHandleHit) {
+    } else if (lowerHandleDistance <= EYELID_HANDLE_HIT_SIZE) {
       mode = "lowerLid";
     } else if (eyelidLineHit) {
       mode = eyelidLineHit;
@@ -352,19 +365,25 @@ export function EyeReader() {
       mode = "resize";
     }
 
-    if (mode === "move" && centerDistance > detection.rIris) return;
+    if (mode === "move" && centerDistance > currentDetection.rIris) return;
 
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
+    const eyelidReferenceY =
+      mode === "upperLid" || mode === "lowerLid"
+        ? eyelidCurveY(
+            currentDetection,
+            currentEyelidMask,
+            mode === "upperLid" ? "upper" : "lower",
+            point.x,
+          )
+        : null;
     dragRef.current = {
       mode,
       pointerId: event.pointerId,
-      offsetX: point.x - detection.cx,
+      offsetX: point.x - currentDetection.cx,
       offsetY:
-        mode === "upperLid" || mode === "lowerLid"
-          ? point.y -
-            eyelidCurveY(detection, eyelidMask, mode === "upperLid" ? "upper" : "lower", point.x)
-          : point.y - detection.cy,
+        eyelidReferenceY === null ? point.y - currentDetection.cy : point.y - eyelidReferenceY,
     };
   }
 
@@ -390,13 +409,22 @@ export function EyeReader() {
         drag.mode === "upperLid"
           ? {
               ...currentEyelidMask,
-              topOffset: clamp(offset, -1.05, currentEyelidMask.bottomOffset - 0.18),
+              topOffset: clamp(
+                offset,
+                EYELID_OFFSET_MIN,
+                currentEyelidMask.bottomOffset - EYELID_MIN_GAP,
+              ),
             }
           : {
               ...currentEyelidMask,
-              bottomOffset: clamp(offset, currentEyelidMask.topOffset + 0.18, 1.05),
+              bottomOffset: clamp(
+                offset,
+                currentEyelidMask.topOffset + EYELID_MIN_GAP,
+                EYELID_OFFSET_MAX,
+              ),
             };
       updateEyelidMask(next);
+      setReport(null);
       redrawSourceWithOverlay(currentDetection, next);
       if (autoDetectionRef.current) setError(null);
       return;
@@ -447,9 +475,13 @@ export function EyeReader() {
   const rightSideLabel = eyeOrientationLabel(eye, "right");
 
   return (
-    <div className="grid lg:grid-cols-2 gap-8">
+    <div className="grid lg:grid-cols-[65fr_35fr] gap-8">
       <div className="space-y-4">
-        <div className="relative rounded-2xl bg-deep shadow-soft w-full mx-auto">
+        <div
+          className={`relative rounded-2xl bg-deep shadow-soft mx-auto overflow-hidden ${
+            imageReady ? "w-fit max-w-full" : "w-full min-h-[320px]"
+          }`}
+        >
           <canvas
             ref={canvasRef}
             className={`block max-w-full h-auto object-contain ${imageReady && detection ? "cursor-grab touch-none" : ""}`}
@@ -459,12 +491,16 @@ export function EyeReader() {
             onPointerCancel={handleCanvasPointerUp}
             onPointerLeave={handleCanvasPointerLeave}
           />
-          {!imageReady && (
+          {(!imageReady || imageLoading || (analyzing && !detection)) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-primary-foreground gap-3 bg-deep/90">
-              {openCvLoading ? (
+              {openCvLoading || imageLoading || analyzing ? (
                 <>
-                  <Loader2 className="h-8 w-8 animate-spin" />
-                  <p className="text-sm opacity-80">Loading OpenCV vision engine...</p>
+                  <Loader2 className="iris-loader-spin h-8 w-8" />
+                  <p className="text-sm opacity-80">
+                    {imageLoading || analyzing
+                      ? "Locking iris..."
+                      : "Loading OpenCV vision engine..."}
+                  </p>
                 </>
               ) : (
                 <>
@@ -475,12 +511,12 @@ export function EyeReader() {
             </div>
           )}
           {imageReady && detection && (
-            <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium">
+            <div className="pointer-events-none absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium">
               Iris locked · r={Math.round(detection.rIris)}px
             </div>
           )}
           {imageReady && detection && (
-            <div className="absolute top-3 right-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
+            <div className="pointer-events-none absolute top-3 right-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
               Mouse: {pointerSideLabel}
             </div>
           )}
@@ -494,14 +530,8 @@ export function EyeReader() {
               </span>
             </div>
           )}
-          {imageReady && analyzing && !detection && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-primary-foreground gap-3 bg-deep/90">
-              <Loader2 className="h-8 w-8 animate-spin" />
-              <p className="text-sm opacity-80">Analyzing the image…</p>
-            </div>
-          )}
           {imageReady && !detection && !analyzing && (
-            <div className="absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
+            <div className="pointer-events-none absolute top-3 left-3 bg-background/80 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">
               No iris locked
             </div>
           )}
@@ -517,14 +547,14 @@ export function EyeReader() {
           />
           <button
             onClick={() => fileInputRef.current?.click()}
-            disabled={!openCvReady || openCvLoading || analyzing}
+            disabled={!openCvReady || openCvLoading || imageLoading || analyzing}
             className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg font-medium shadow-soft hover:brightness-110 transition disabled:opacity-50"
           >
             <ImagePlus className="h-4 w-4" /> Choose an eye image
           </button>
           <button
             onClick={analyzeIris}
-            disabled={!openCvReady || !detection || analyzing}
+            disabled={!openCvReady || !detection || imageLoading || analyzing}
             className="inline-flex items-center gap-2 bg-accent text-accent-foreground px-5 py-2.5 rounded-lg font-medium shadow-glow hover:brightness-110 transition disabled:opacity-40 disabled:shadow-none"
           >
             {analyzing ? (
@@ -555,8 +585,8 @@ export function EyeReader() {
               <div>
                 <div className="text-sm font-medium">Fine-tune the iris overlay</div>
                 <p className="text-xs text-muted-foreground">
-                  Drag the circle to move it, the green handle to resize it, and the blue dashed
-                  eyelid lines to exclude covered areas.
+                  Drag the circle to move it, the green handle to resize it, and use the eyelid
+                  sliders at the bottom of the image to exclude covered areas.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -614,7 +644,7 @@ export function EyeReader() {
                 <ul className="space-y-1.5 text-sm">
                   {report.ringObservations.map((r, i) => (
                     <li key={i} className="flex gap-2">
-                      <span className="text-primary mt-1.5">•</span> {r}
+                      <span className="text-primary mt-0">•</span> {r}
                     </li>
                   ))}
                 </ul>
@@ -688,6 +718,16 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function waitForLoaderPaint() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.setTimeout(resolve, 80);
+      });
+    });
+  });
+}
+
 function eyeOrientationLabel(eye: Eye, side: PointerSide) {
   const noseSide: PointerSide = eye === "right" ? "right" : "left";
   return side === noseSide ? "Nose / other eye side" : "Temple side";
@@ -706,10 +746,22 @@ function eyelidCurveY(
   return detection.cy + detection.rIris * eyelidMask.bottomOffset - edgeCurve;
 }
 
+function eyelidHandlePoint(
+  detection: Detection,
+  eyelidMask: EyelidMask,
+  lid: "upper" | "lower",
+): CanvasPoint {
+  return {
+    x: detection.cx,
+    y: eyelidCurveY(detection, eyelidMask, lid, detection.cx),
+  };
+}
+
 function eyelidDragModeFromPoint(
   detection: Detection,
   eyelidMask: EyelidMask,
   point: CanvasPoint,
+  hitSize = EYELID_LINE_HIT_SIZE,
 ): Extract<DragMode, "upperLid" | "lowerLid"> | null {
   if (point.x < detection.cx - detection.rIris || point.x > detection.cx + detection.rIris) {
     return null;
@@ -719,7 +771,7 @@ function eyelidDragModeFromPoint(
   const lowerDistance = Math.abs(point.y - eyelidCurveY(detection, eyelidMask, "lower", point.x));
   const closestDistance = Math.min(upperDistance, lowerDistance);
 
-  if (closestDistance > EYELID_LINE_HIT_SIZE) return null;
+  if (closestDistance > hitSize) return null;
   return upperDistance <= lowerDistance ? "upperLid" : "lowerLid";
 }
 
@@ -753,9 +805,9 @@ function drawEyelidMask(
   const steps = 56;
 
   ctx.save();
-  ctx.lineWidth = 10;
+  ctx.lineWidth = 5;
   ctx.strokeStyle = "#60A5FA";
-  ctx.setLineDash([14, 8]);
+  ctx.setLineDash([10, 8]);
 
   for (const lid of ["upper", "lower"] as const) {
     ctx.beginPath();
@@ -771,12 +823,12 @@ function drawEyelidMask(
   ctx.setLineDash([]);
   ctx.fillStyle = "#60A5FA";
   ctx.strokeStyle = "#EAF7EF";
-  ctx.lineWidth = 5;
+  ctx.lineWidth = 3;
 
   for (const lid of ["upper", "lower"] as const) {
-    const y = eyelidCurveY(detection, eyelidMask, lid, detection.cx);
+    const handle = eyelidHandlePoint(detection, eyelidMask, lid);
     ctx.beginPath();
-    ctx.arc(detection.cx, y, EYELID_HANDLE_SIZE, 0, Math.PI * 2);
+    ctx.arc(handle.x, handle.y, EYELID_HANDLE_SIZE, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }

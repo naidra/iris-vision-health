@@ -534,7 +534,7 @@ export function EyeReader() {
                 <>
                   <Loader2 className="iris-loader-spin h-8 w-8" />
                   {openCvLoading && !imageLoading && !analyzing ? (
-                    <div className="w-full max-w-[300px] space-y-2 px-6 text-center">
+                    <div className="w-full max-w-[350px] space-y-2 px-6 text-center">
                       <div className="flex items-center justify-between gap-4 text-sm opacity-80">
                         <span>Loading OpenCV vision engine...</span>
                         <span className="tabular-nums">{Math.round(openCvProgress)}%</span>

@@ -3,6 +3,7 @@ import type { ChangeEvent, PointerEvent } from "react";
 import { useRef, useState } from "react";
 import { Loader2, ScanEye, AlertTriangle, ImagePlus, HelpCircle } from "lucide-react";
 import { useOpenCv } from "@/hooks/useOpenCv";
+import { Progress } from "@/components/ui/progress";
 
 interface Detection {
   cx: number;
@@ -63,7 +64,12 @@ export function EyeReader() {
     offsetY: number;
   } | null>(null);
 
-  const { ready: openCvReady, loading: openCvLoading, error: openCvError } = useOpenCv();
+  const {
+    ready: openCvReady,
+    loading: openCvLoading,
+    error: openCvError,
+    progress: openCvProgress,
+  } = useOpenCv();
   const [error, setError] = useState<string | null>(null);
   const [detection, setDetection] = useState<Detection | null>(null);
   const [imageReady, setImageReady] = useState(false);
@@ -527,11 +533,21 @@ export function EyeReader() {
               {openCvLoading || imageLoading || analyzing ? (
                 <>
                   <Loader2 className="iris-loader-spin h-8 w-8" />
-                  <p className="text-sm opacity-80">
-                    {imageLoading || analyzing
-                      ? "Locking iris..."
-                      : "Loading OpenCV vision engine..."}
-                  </p>
+                  {openCvLoading && !imageLoading && !analyzing ? (
+                    <div className="w-full max-w-[300px] space-y-2 px-6 text-center">
+                      <div className="flex items-center justify-between gap-4 text-sm opacity-80">
+                        <span>Loading OpenCV vision engine...</span>
+                        <span className="tabular-nums">{Math.round(openCvProgress)}%</span>
+                      </div>
+                      <Progress
+                        value={openCvProgress}
+                        aria-label="OpenCV vision engine loading progress"
+                        className="h-2 bg-primary-foreground/20"
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-sm opacity-80">Locking iris...</p>
+                  )}
                 </>
               ) : (
                 <>

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 declare global {
   interface Window {
@@ -56,17 +56,42 @@ export function useOpenCv() {
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const loadAttempted = useRef(false);
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
-    if (loadAttempted.current) return;
-    loadAttempted.current = true;
+    let isMounted = true;
+    let progressIntervalId: number | null = null;
+
+    const startProgress = () => {
+      if (!isMounted) return;
+      setProgress((current) => Math.max(current, 8));
+      progressIntervalId = window.setInterval(() => {
+        if (!isMounted) return;
+        setProgress((current) => {
+          if (current >= 92) return current;
+          const increment = current < 55 ? 7 : current < 80 ? 4 : 2;
+          return Math.min(92, current + increment);
+        });
+      }, 320);
+    };
+
+    const stopProgress = (nextProgress: number) => {
+      if (!isMounted) return;
+      if (progressIntervalId !== null) {
+        window.clearInterval(progressIntervalId);
+        progressIntervalId = null;
+      }
+      setProgress(nextProgress);
+    };
 
     if (window.cv && window.cv.Mat) {
       setReady(true);
       setLoading(false);
+      setProgress(100);
       return;
     }
+
+    startProgress();
 
     const existingScript = document.querySelector<HTMLScriptElement>(
       'script[data-opencv-local="true"]',
@@ -74,27 +99,35 @@ export function useOpenCv() {
     const scriptSrc = localOpenCvUrl();
 
     const finish = (cv: any) => {
+      if (!isMounted) return;
       if (cv && cv.Mat) {
         setReady(true);
         setLoading(false);
         setError(null);
+        stopProgress(100);
         return;
       }
 
       setReady(false);
       setLoading(false);
       setError("OpenCV loaded but never became ready.");
+      stopProgress(0);
     };
 
     const fail = (message: string) => {
+      if (!isMounted) return;
       setReady(false);
       setLoading(false);
       setError(message);
+      stopProgress(0);
     };
 
     if (existingScript?.src === scriptSrc) {
       waitForCvReady(finish, fail);
-      return;
+      return () => {
+        isMounted = false;
+        if (progressIntervalId !== null) window.clearInterval(progressIntervalId);
+      };
     }
 
     existingScript?.remove();
@@ -105,6 +138,7 @@ export function useOpenCv() {
     script.dataset.opencvLocal = "true";
 
     script.onload = () => {
+      setProgress((current) => Math.max(current, 96));
       waitForCvReady(finish, fail);
     };
 
@@ -113,7 +147,12 @@ export function useOpenCv() {
     };
 
     document.head.appendChild(script);
+
+    return () => {
+      isMounted = false;
+      if (progressIntervalId !== null) window.clearInterval(progressIntervalId);
+    };
   }, []);
 
-  return { ready, loading, error };
+  return { ready, loading, error, progress };
 }
